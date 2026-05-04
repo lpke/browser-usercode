@@ -1,0 +1,35 @@
+/* ==UserStyle==
+@name           Notion - Disable Sidebar Hover Open
+@namespace      local.lpke.userstyles.notion
+@version        1.0.0
+@description    Prevents Notion's collapsed sidebar from opening on left-edge hover while leaving the pinned-open sidebar untouched.
+@author         Luke
+@license        MIT
+@preprocessor   default
+==/UserStyle== */
+
+@-moz-document domain("notion.so") {
+  /*
+   * Pinned-open sidebar has width and no aria-hidden attribute.
+   * Collapsed/hover-preview sidebar exposes aria-hidden or the lock-open
+   * control, so this keeps only that transient state inert.
+   */
+  nav.notion-sidebar-container[aria-hidden="true"],
+  nav.notion-sidebar-container:has(.notion-sidebar [aria-label="Lock sidebar open"]) {
+    width: 0 !important;
+    min-width: 0 !important;
+    max-width: 0 !important;
+    flex-basis: 0 !important;
+    pointer-events: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  nav.notion-sidebar-container[aria-hidden="true"] .notion-sidebar,
+  nav.notion-sidebar-container:has(.notion-sidebar [aria-label="Lock sidebar open"]) .notion-sidebar {
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    transform: translateX(calc(var(--direction, 1) * -100%)) !important;
+  }
+}
