@@ -5,15 +5,17 @@
 // @description  Sink Notion Amplitude/EventTrail, Statsig, and Sentry telemetry that causes blocked-request retry noise.
 // @match        https://www.notion.so/*
 // @match        https://notion.so/*
+// @match        https://calendar.notion.so/*
+// @match        https://mail.notion.com/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
 
 (() => {
-  "use strict";
+  'use strict';
 
-  const getUrl = input => {
-    const raw = typeof input === "string" ? input : input && input.url;
+  const getUrl = (input) => {
+    const raw = typeof input === 'string' ? input : input && input.url;
     if (!raw) return null;
 
     try {
@@ -23,37 +25,40 @@
     }
   };
 
-  const sinkKind = input => {
+  const sinkKind = (input) => {
     const url = getUrl(input);
     if (!url) return null;
 
     if (
-      (url.hostname === "www.notion.so" || url.hostname === "notion.so") &&
-      url.pathname === "/api/v3/etClient"
+      (url.hostname === 'www.notion.so' || url.hostname === 'notion.so') &&
+      url.pathname === '/api/v3/etClient'
     ) {
-      return "amplitude";
+      return 'amplitude';
     }
 
-    if (url.hostname === "exp.notion.so" && url.pathname === "/v1/rgstr") {
-      return "statsig-events";
+    if (url.hostname === 'exp.notion.so' && url.pathname === '/v1/rgstr') {
+      return 'statsig-events';
     }
 
-    if (url.hostname === "exp.notion.so" && url.pathname === "/v1/initialize") {
-      return "statsig-init";
+    if (url.hostname === 'exp.notion.so' && url.pathname === '/v1/initialize') {
+      return 'statsig-init';
     }
 
-    if (/\.ingest\.sentry\.io$/.test(url.hostname) && url.pathname.includes("/envelope/")) {
-      return "sentry";
+    if (
+      /\.ingest\.sentry\.io$/.test(url.hostname) &&
+      url.pathname.includes('/envelope/')
+    ) {
+      return 'sentry';
     }
 
     return null;
   };
 
-  const jsonResponse = body =>
+  const jsonResponse = (body) =>
     new Response(JSON.stringify(body), {
       status: 200,
-      statusText: "OK",
-      headers: { "Content-Type": "application/json" },
+      statusText: 'OK',
+      headers: { 'Content-Type': 'application/json' },
     });
 
   const fakeTelemetryResponse = () =>
@@ -67,13 +72,13 @@
   const noContentResponse = () =>
     new Response(null, {
       status: 204,
-      statusText: "No Content",
+      statusText: 'No Content',
     });
 
   const okEmptyResponse = () =>
-    new Response("", {
+    new Response('', {
       status: 200,
-      statusText: "OK",
+      statusText: 'OK',
     });
 
   try {
@@ -94,11 +99,11 @@
   window.fetch = function patchedFetch(input, init) {
     const kind = sinkKind(input);
 
-    if (kind === "statsig-init") {
+    if (kind === 'statsig-init') {
       return Promise.resolve(noContentResponse());
     }
 
-    if (kind === "sentry") {
+    if (kind === 'sentry') {
       return Promise.resolve(okEmptyResponse());
     }
 
