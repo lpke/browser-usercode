@@ -142,8 +142,10 @@
     lastSignature: '',
     runId: 0,
     collapsed: Boolean(GM_getValue(PANEL_COLLAPSED_KEY, false)),
+    watchPaused: false,
   };
   let pendingRun = 0;
+  let pendingRunFromWatcher = false;
 
   if (!state.site) return;
 
@@ -282,6 +284,16 @@
       #${PANEL_ID} .job-scraper-llm__button:hover,
       #${JSON_WINDOW_ID} .job-scraper-llm__button:hover {
         background: rgba(255, 255, 255, 0.16);
+      }
+
+      #${PANEL_ID} .job-scraper-llm__button--watch-paused {
+        background: rgba(147, 197, 253, 0.12);
+        border-color: rgba(147, 197, 253, 0.38);
+        color: #dbeafe;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__button--watch-paused:hover {
+        background: rgba(147, 197, 253, 0.18);
       }
 
       #${PANEL_ID} .job-scraper-llm__button:disabled,
@@ -511,6 +523,7 @@
               <button class="job-scraper-llm__menu-item" type="button" role="menuitem" data-menu-action="view-json">◎ View JSON</button>
             </div>
           </div>
+          <button class="job-scraper-llm__button" type="button" data-action="watch-toggle" title="Stop watching job changes" aria-label="Stop watching job changes" aria-pressed="false">▪</button>
           <button class="job-scraper-llm__button" type="button" data-action="retry" title="Retry analysis" aria-label="Retry analysis">⟳</button>
         </div>
       </div>
@@ -522,6 +535,7 @@
     state.content = panel.querySelector('.job-scraper-llm__body');
     applySavedPanelPosition(panel);
     applyCollapsedState();
+    applyWatchPausedState();
     renderPanelTitle();
     installPanelEvents(panel);
     document.body.appendChild(panel);
@@ -547,6 +561,7 @@
     const header = panel.querySelector('.job-scraper-llm__header');
     const menuButton = panel.querySelector('[data-action="menu"]');
     const menu = panel.querySelector('.job-scraper-llm__menu');
+    const watchButton = panel.querySelector('[data-action="watch-toggle"]');
     const retryButton = panel.querySelector('[data-action="retry"]');
     let dragStart = null;
 
@@ -600,6 +615,12 @@
     menuButton.addEventListener('click', (event) => {
       event.stopPropagation();
       toggleActionMenu();
+    });
+
+    watchButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closeActionMenu();
+      toggleWatchPaused();
     });
 
     menu.addEventListener('click', (event) => {
@@ -702,6 +723,36 @@
 
     state.panel.classList.toggle('job-scraper-llm--collapsed', state.collapsed);
     if (!state.collapsed) window.requestAnimationFrame(updateTechClampState);
+  }
+
+  function toggleWatchPaused() {
+    state.watchPaused = !state.watchPaused;
+    if (state.watchPaused) cancelPendingWatcherRun();
+    applyWatchPausedState();
+  }
+
+  function cancelPendingWatcherRun() {
+    if (!pendingRun || !pendingRunFromWatcher) return;
+
+    window.clearTimeout(pendingRun);
+    pendingRun = 0;
+    pendingRunFromWatcher = false;
+  }
+
+  function applyWatchPausedState() {
+    const button = state.panel?.querySelector('[data-action="watch-toggle"]');
+    if (!button) return;
+
+    const paused = Boolean(state.watchPaused);
+    const label = paused
+      ? 'Resume watching job changes'
+      : 'Stop watching job changes';
+
+    button.textContent = paused ? '▶' : '▪';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-pressed', paused ? 'true' : 'false');
+    button.classList.toggle('job-scraper-llm__button--watch-paused', paused);
   }
 
   function renderPanelTitle() {
@@ -901,8 +952,15 @@
   }
 
   function scheduleRun(delayMs, options = {}) {
+    if (options.fromWatcher && state.watchPaused) return;
+
     window.clearTimeout(pendingRun);
+    pendingRunFromWatcher = Boolean(options.fromWatcher);
     pendingRun = window.setTimeout(() => {
+      pendingRun = 0;
+      pendingRunFromWatcher = false;
+      if (options.fromWatcher && state.watchPaused) return;
+
       runExtraction(options).catch((error) => {
         renderError(toUserError(error));
       });
@@ -1319,8 +1377,13 @@
       if (location.href === lastUrl) return;
 
       lastUrl = location.href;
+      if (state.watchPaused) return;
+
       resetJobState();
-      scheduleRun(state.site === 'linkedin' ? 800 : 500, { force: true });
+      scheduleRun(state.site === 'linkedin' ? 800 : 500, {
+        force: true,
+        fromWatcher: true,
+      });
     });
 
     const start = () => {
