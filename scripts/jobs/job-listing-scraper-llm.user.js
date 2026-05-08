@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Job listing scraper (LLM)
 // @namespace    local
-// @version      1.0.6
+// @version      1.0.7
 // @description  Summarise LinkedIn and SEEK job listings with a local Ollama model.
 // @match        https://www.linkedin.com/jobs/view/*
 // @match        https://www.linkedin.com/jobs/search/*
@@ -40,6 +40,8 @@
       '.NET, Java, C#, C++ required',
       'hybrid but not based in Sydney/NSW',
     ],
+    goodTech: ['TypeScript', 'React', 'Node(?:\\.js)?', 'Next(?:\\.js)?', 'GraphQL'],
+    badTech: ['\\.NET', '\\bJava\\b', '\\bC#\\b', '\\bC\\+\\+\\b'],
     statusIcons: {
       good: '✓',
       bad: '✕',
@@ -60,6 +62,10 @@
       low: '#4b5563',
       medium: '#666b71',
       high: '#8a9098',
+    },
+    techMatchColors: {
+      good: '#6fbf92',
+      bad: '#d18484',
     },
   };
 
@@ -224,7 +230,7 @@
       }
 
       #${PANEL_ID} .job-scraper-llm__label {
-        color: #cbd5e1;
+        color: #bfdbfe;
         font-weight: 700;
       }
 
@@ -256,7 +262,7 @@
 
       #${PANEL_ID} .job-scraper-llm__tech-line--overflow {
         cursor: pointer;
-        padding-right: 24px;
+        padding-right: 34px;
       }
 
       #${PANEL_ID} .job-scraper-llm__tech-line--overflow:not(.job-scraper-llm__tech-line--expanded)::after {
@@ -264,11 +270,9 @@
         position: absolute;
         right: 0;
         bottom: 0;
-        min-width: 30px;
-        padding-left: 12px;
+        width: 28px;
         color: #f9fafb;
         text-align: right;
-        background: linear-gradient(90deg, rgba(17, 24, 39, 0), rgb(30 37 51) 38%);
       }
 
       #${PANEL_ID} .job-scraper-llm__tech-line--expanded {
@@ -357,7 +361,7 @@
     panel.id = PANEL_ID;
     panel.setAttribute('aria-live', 'polite');
     panel.innerHTML = `
-      <div class="job-scraper-llm__header" title="Drag to move. Click title to collapse.">
+      <div class="job-scraper-llm__header">
         <div class="job-scraper-llm__title">Job Scraper</div>
         <div class="job-scraper-llm__controls">
           <button class="job-scraper-llm__button" type="button" data-action="copy" title="Copy summary" aria-label="Copy summary">⎘</button>
@@ -476,6 +480,11 @@
       event.preventDefault();
       toggleTechLine(techLine);
     });
+
+    window.addEventListener('resize', () => {
+      updateTitleTooltip();
+      updateTechClampState();
+    });
   }
 
   function toggleCollapsed() {
@@ -497,7 +506,8 @@
     const title = cleanJobTitle(state.jobTitle);
     if (!title) {
       state.titleElement.textContent = 'Job Scraper';
-      state.titleElement.title = 'Job Scraper';
+      state.titleElement.removeAttribute('title');
+      delete state.titleElement.dataset.fullTitle;
       state.titleElement.style.color = '';
       return;
     }
@@ -510,8 +520,10 @@
     const icon =
       CONFIG.statusIcons?.[status] || CONFIG.statusIcons?.uncertain || '';
     state.titleElement.innerHTML = `${icon ? `<span class="job-scraper-llm__status-icon">${escapeHtml(icon)}</span>` : ''}${escapeHtml(title)}`;
-    state.titleElement.title = formatAssessmentTitle(state.assessment);
+    state.titleElement.removeAttribute('title');
+    state.titleElement.dataset.fullTitle = title;
     state.titleElement.style.color = statusColor(status);
+    window.requestAnimationFrame(updateTitleTooltip);
   }
 
   function persistPanelPosition() {
@@ -1103,9 +1115,18 @@ ${jdText}
     return `
       <div class="job-scraper-llm__line job-scraper-llm__tech-line" data-tech-line>
         <span class="job-scraper-llm__label">${escapeHtml(label)}:</span>
-        ${escapeHtml(values.length ? values.join(', ') : 'None found')}
+        ${values.length ? values.map(renderTechItem).join(', ') : 'None found'}
       </div>
     `;
+  }
+
+  function renderTechItem(value) {
+    const text = cleanMetadataText(value);
+    const kind = techMatchKind(text);
+    const color = kind ? cleanMetadataText(CONFIG.techMatchColors?.[kind]) : '';
+    const style = color ? ` style="color: ${escapeHtml(color)}"` : '';
+
+    return `<span${style}>${escapeHtml(text)}</span>`;
   }
 
   function renderFitCriteria(result) {
@@ -1126,12 +1147,18 @@ ${jdText}
     const style = color ? ` style="color: ${escapeHtml(color)}"` : '';
     const textStyle =
       item.active && color ? ` style="color: ${escapeHtml(color)}"` : '';
+    const details = cleanMetadataText(item.check.details);
+    const title = details ? ` title="${escapeHtml(details)}"` : '';
+    const confidence = renderConfidenceSymbol(
+      item.check.confidence,
+      item.check.confidence !== 'high',
+    );
 
     return `
-      <span class="job-scraper-llm__fit-item">
+      <span class="job-scraper-llm__fit-item"${title}>
         <span class="job-scraper-llm__fit-symbol"${style}>${escapeHtml(icon)}</span>
         <span class="job-scraper-llm__fit-text"${textStyle}>${escapeHtml(item.check.criterion)}</span>
-        ${renderConfidenceSymbol(item.check.confidence, true)}
+        ${confidence}
       </span>
     `;
   }
@@ -1156,6 +1183,17 @@ ${jdText}
       line.setAttribute('tabindex', '0');
       line.setAttribute('aria-expanded', 'false');
       line.setAttribute('title', 'Click to expand');
+    }
+  }
+
+  function updateTitleTooltip() {
+    const element = state.titleElement;
+    if (!element) return;
+
+    const fullTitle = cleanMetadataText(element.dataset.fullTitle);
+    element.removeAttribute('title');
+    if (fullTitle && element.scrollWidth > element.clientWidth + 1) {
+      element.setAttribute('title', fullTitle);
     }
   }
 
@@ -1257,6 +1295,28 @@ ${jdText}
     return cleanMetadataText(
       CONFIG.confidenceColors?.[key] || CONFIG.confidenceColor,
     );
+  }
+
+  function techMatchKind(value) {
+    if (regexListMatches(CONFIG.badTech, value)) return 'bad';
+    if (regexListMatches(CONFIG.goodTech, value)) return 'good';
+    return '';
+  }
+
+  function regexListMatches(patterns, value) {
+    const text = String(value || '');
+    if (!text || !Array.isArray(patterns)) return false;
+
+    for (const pattern of patterns) {
+      const source = cleanMetadataText(pattern);
+      if (!source) continue;
+
+      try {
+        if (new RegExp(source, 'i').test(text)) return true;
+      } catch {}
+    }
+
+    return false;
   }
 
   function collectFitCriteria(result) {
