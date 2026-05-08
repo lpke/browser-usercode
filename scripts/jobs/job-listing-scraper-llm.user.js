@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Job listing scraper (LLM)
 // @namespace    local
-// @version      1.0.7
+// @version      1.0.9
 // @description  Summarise LinkedIn and SEEK job listings with a local Ollama model.
 // @match        https://www.linkedin.com/jobs/view/*
 // @match        https://www.linkedin.com/jobs/search/*
@@ -20,6 +20,8 @@
 // @grant        GM_setClipboard
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @connect      localhost
 // @run-at       document-idle
 // ==/UserScript==
@@ -28,10 +30,6 @@
   'use strict';
 
   const CONFIG = {
-    model: 'qwen2.5:7b',
-    ollamaUrl: 'http://localhost:11434',
-    timeout: 15000,
-    numPredict: 1024,
     good: ['pay > 165k or $110+/hour', 'fully remote'],
     bad: [
       'pay < 160k or $100/hour',
@@ -40,8 +38,18 @@
       '.NET, Java, C#, C++ required',
       'hybrid but not based in Sydney/NSW',
     ],
-    goodTech: ['TypeScript', 'React', 'Node(?:\\.js)?', 'Next(?:\\.js)?', 'GraphQL'],
+    goodTech: [
+      'TypeScript',
+      'React',
+      'Node(?:\\.js)?',
+      'Next(?:\\.js)?',
+      'GraphQL',
+    ],
     badTech: ['\\.NET', '\\bJava\\b', '\\bC#\\b', '\\bC\\+\\+\\b'],
+    model: 'qwen2.5:7b',
+    ollamaUrl: 'http://localhost:11434',
+    timeout: 15000,
+    numPredict: 1024,
     statusIcons: {
       good: '✓',
       bad: '✕',
@@ -64,14 +72,21 @@
       high: '#8a9098',
     },
     techMatchColors: {
-      good: '#6fbf92',
-      bad: '#d18484',
+      good: '#a8e5c4',
+      bad: '#f4bcbc',
     },
+    queueMaxConcurrent: 2,
+    queueLeaseMs: 30000,
+    queueWaitFailOpenMs: 60000,
+    queueStaleMs: 300000,
+    queuePollMs: 300,
   };
 
   const PANEL_ID = 'job-scraper-llm-panel';
   const PANEL_POSITION_KEY = 'jobScraperLlmPanelPosition';
   const PANEL_COLLAPSED_KEY = 'jobScraperLlmPanelCollapsed';
+  const OLLAMA_QUEUE_KEY = 'jobScraperLlmOllamaQueue';
+  const TAB_ID = makeId('tab');
   const VALID_WORK_TYPES = new Set(['remote', 'hybrid', 'onsite', 'unknown']);
   const VALID_PAY_TYPES = new Set(['annual', 'daily', 'hourly', 'unknown']);
   const VALID_CONFIDENCE = new Set(['high', 'medium', 'low']);
@@ -561,14 +576,16 @@
     const runId = ++state.runId;
     ensurePanel();
     if (force) resetJobState();
-    renderLoading('Analysing...');
+    renderLoading('Scraping...');
 
     try {
       await delay(350);
+      await ensureJobDetailsPaneOpen();
+
       if (state.site === 'linkedin') {
         renderLoading('Expanding description...');
         await ensureLinkedInDescriptionExpanded();
-        renderLoading('Analysing...');
+        renderLoading('Scraping...');
       }
 
       const extraction = await waitForExtraction();
@@ -590,7 +607,10 @@
       }
 
       state.lastSignature = signature;
-      const result = await queryLLM(extraction.text);
+      renderLoading('Analysing...');
+      const result = await queryLLM(extraction.text, (message) => {
+        if (runId === state.runId) renderLoading(message);
+      });
       if (runId !== state.runId) return;
 
       state.currentResult = result;
@@ -699,6 +719,78 @@
       title,
       text: composeJobText(metadata, bodyText),
     };
+  }
+
+  async function ensureJobDetailsPaneOpen() {
+    if (hasExtractableDescription()) return;
+    if (!isJobListPage()) return;
+
+    const control = findJobRowControl();
+    if (!control) return;
+
+    safeClick(control);
+
+    const deadline = Date.now() + 3500;
+    while (Date.now() < deadline) {
+      if (hasExtractableDescription()) return;
+      await delay(250);
+    }
+  }
+
+  function hasExtractableDescription() {
+    const body =
+      state.site === 'linkedin'
+        ? getLinkedInDescriptionBody(getLinkedInDescriptionRoot())
+        : firstElement([
+            '[data-automation="jobAdDetails"]',
+            '[data-testid="jobAdDetails"]',
+            '[data-automation="job-ad-details"]',
+          ]);
+
+    return cleanDescriptionText(getText(body)).length >= 80;
+  }
+
+  function findJobRowControl() {
+    const selectors =
+      state.site === 'linkedin'
+        ? [
+            '.jobs-search-results-list a.job-card-list__title[href*="/jobs/view/"]',
+            '.jobs-search-results-list .job-card-container a[href*="/jobs/view/"]',
+            'li.jobs-search-results__list-item a[href*="/jobs/view/"]',
+            '.job-card-container a[href*="/jobs/view/"]',
+            'a[href*="/jobs/view/"]',
+          ]
+        : [
+            '[data-testid="job-card"] [data-automation="jobTitle"] a',
+            '[data-testid="job-card"] [data-testid="job-card-title"] a',
+            '[data-testid="job-card"] [data-automation="job-list-view-job-link"]',
+            '[data-testid="job-card"] [data-automation="job-list-item-link-overlay"]',
+            '[data-testid="job-list-item-link-overlay"]',
+            '[data-automation="job-list-item-link-overlay"]',
+            'a[href*="/job/"]',
+          ];
+
+    for (const selector of selectors) {
+      const element = document.querySelector(selector);
+      if (element && isVisibleElement(element)) return element;
+    }
+
+    return null;
+  }
+
+  function isVisibleElement(element) {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isJobListPage() {
+    const path = location.pathname;
+
+    if (state.site === 'linkedin') {
+      return /^\/jobs\/search/.test(path) || /^\/jobs\/search-results/.test(path);
+    }
+
+    return !/^\/job\//.test(path) && (/\/jobs/.test(path) || /-jobs\/?$/.test(path));
   }
 
   async function ensureLinkedInDescriptionExpanded() {
@@ -817,9 +909,9 @@
     start();
   }
 
-  function queryLLM(jdText) {
+  function queryLLM(jdText, onStatus = () => {}) {
     return retryParse(async () => {
-      const raw = await requestOllama(jdText);
+      const raw = await requestOllamaQueued(jdText, onStatus);
       const parsed = parseJsonResponse(raw);
       return validateResult(parsed);
     });
@@ -838,6 +930,216 @@
     }
 
     throw lastError;
+  }
+
+  async function requestOllamaQueued(jdText, onStatus = () => {}) {
+    let release = null;
+
+    try {
+      release = await acquireOllamaQueueSlot(onStatus);
+    } catch (error) {
+      console.warn(
+        '[Job Scraper LLM] Queue unavailable; running directly',
+        error,
+      );
+      onStatus('Analysing...');
+      return requestOllama(jdText);
+    }
+
+    try {
+      onStatus('Analysing...');
+      return await requestOllama(jdText);
+    } finally {
+      releaseOllamaQueueSlot(release);
+    }
+  }
+
+  function acquireOllamaQueueSlot(onStatus = () => {}) {
+    return new Promise((resolve, reject) => {
+      const id = makeId('run');
+      const startedAt = Date.now();
+      let timer = 0;
+      let listenerId = null;
+      let settled = false;
+
+      const cleanup = () => {
+        if (timer) window.clearTimeout(timer);
+        if (
+          listenerId !== null &&
+          typeof GM_removeValueChangeListener === 'function'
+        ) {
+          try {
+            GM_removeValueChangeListener(listenerId);
+          } catch {}
+        }
+      };
+
+      const failOpen = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        releaseOllamaQueueSlot(id);
+        reject(error);
+      };
+
+      const tick = () => {
+        if (settled) return;
+
+        try {
+          const result = tryAcquireOllamaQueueSlot(id);
+          if (result.acquired) {
+            settled = true;
+            cleanup();
+            resolve(id);
+            return;
+          }
+
+          onStatus(formatQueueStatus(result.ahead));
+
+          if (Date.now() - startedAt > queueWaitFailOpenMs()) {
+            failOpen(new Error('Queue wait timeout'));
+            return;
+          }
+
+          timer = window.setTimeout(tick, queuePollMs());
+        } catch (error) {
+          failOpen(error);
+        }
+      };
+
+      if (typeof GM_addValueChangeListener === 'function') {
+        try {
+          listenerId = GM_addValueChangeListener(OLLAMA_QUEUE_KEY, () => {
+            if (timer) window.clearTimeout(timer);
+            timer = window.setTimeout(tick, 0);
+          });
+        } catch {}
+      }
+
+      tick();
+    });
+  }
+
+  function tryAcquireOllamaQueueSlot(id) {
+    const now = Date.now();
+    const maxConcurrent = queueMaxConcurrent();
+    const leaseMs = queueLeaseMs();
+    const staleMs = queueStaleMs();
+    const queue = readOllamaQueue()
+      .filter((entry) => isValidQueueEntry(entry))
+      .filter((entry) => {
+        if (entry.running) return Number(entry.leaseUntil) > now;
+        return now - Number(entry.createdAt) <= staleMs;
+      });
+
+    if (!queue.some((entry) => entry.id === id)) {
+      queue.push({
+        id,
+        tabId: TAB_ID,
+        url: location.href,
+        createdAt: now,
+        leaseUntil: 0,
+        running: false,
+      });
+    }
+
+    queue.sort((a, b) => Number(a.createdAt) - Number(b.createdAt));
+
+    let activeRunning = 0;
+    for (const entry of queue) {
+      if (!entry.running) continue;
+
+      activeRunning += 1;
+      if (activeRunning > maxConcurrent) {
+        entry.running = false;
+        entry.leaseUntil = 0;
+      }
+    }
+
+    let runningCount = queue.filter((entry) => entry.running).length;
+    for (const entry of queue) {
+      if (entry.running) continue;
+      if (runningCount >= maxConcurrent) break;
+
+      entry.running = true;
+      entry.leaseUntil = now + leaseMs;
+      runningCount += 1;
+    }
+
+    writeOllamaQueue(queue);
+
+    const freshQueue = readOllamaQueue().filter((entry) =>
+      isValidQueueEntry(entry),
+    );
+    freshQueue.sort((a, b) => Number(a.createdAt) - Number(b.createdAt));
+    const active = freshQueue
+      .filter((entry) => entry.running && Number(entry.leaseUntil) > now)
+      .slice(0, maxConcurrent);
+    const index = freshQueue.findIndex((entry) => entry.id === id);
+
+    return {
+      acquired: active.some((entry) => entry.id === id),
+      ahead: index > 0 ? index : 0,
+    };
+  }
+
+  function releaseOllamaQueueSlot(id) {
+    if (!id) return;
+
+    try {
+      writeOllamaQueue(readOllamaQueue().filter((entry) => entry.id !== id));
+    } catch (error) {
+      console.warn('[Job Scraper LLM] Queue release failed', error);
+    }
+  }
+
+  function readOllamaQueue() {
+    const queue = safeParseJson(GM_getValue(OLLAMA_QUEUE_KEY, '[]'));
+    return Array.isArray(queue) ? queue : [];
+  }
+
+  function writeOllamaQueue(queue) {
+    GM_setValue(OLLAMA_QUEUE_KEY, JSON.stringify(queue.slice(0, 50)));
+  }
+
+  function isValidQueueEntry(entry) {
+    return Boolean(
+      entry &&
+      typeof entry.id === 'string' &&
+      Number.isFinite(Number(entry.createdAt)),
+    );
+  }
+
+  function queueMaxConcurrent() {
+    const value = Number(CONFIG.queueMaxConcurrent);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 2;
+  }
+
+  function queueLeaseMs() {
+    const value = Number(CONFIG.queueLeaseMs);
+    const fallback = Math.max(Number(CONFIG.timeout) + 15000, 30000);
+    return Number.isFinite(value) && value >= 5000 ? value : fallback;
+  }
+
+  function queueWaitFailOpenMs() {
+    const value = Number(CONFIG.queueWaitFailOpenMs);
+    return Number.isFinite(value) && value >= 5000 ? value : 60000;
+  }
+
+  function queueStaleMs() {
+    const value = Number(CONFIG.queueStaleMs);
+    return Number.isFinite(value) && value >= 30000 ? value : 300000;
+  }
+
+  function queuePollMs() {
+    const value = Number(CONFIG.queuePollMs);
+    return Number.isFinite(value) && value >= 100 ? value : 300;
+  }
+
+  function formatQueueStatus(ahead) {
+    const count = Number.isFinite(Number(ahead)) ? Number(ahead) : 0;
+    if (count <= 0) return 'Queued...';
+    return `Queued (${count} ahead)...`;
   }
 
   function requestOllama(jdText) {
@@ -1182,7 +1484,6 @@ ${jdText}
       line.setAttribute('role', 'button');
       line.setAttribute('tabindex', '0');
       line.setAttribute('aria-expanded', 'false');
-      line.setAttribute('title', 'Click to expand');
     }
   }
 
@@ -1202,10 +1503,6 @@ ${jdText}
       'job-scraper-llm__tech-line--expanded',
     );
     line.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    line.setAttribute(
-      'title',
-      expanded ? 'Click to collapse' : 'Click to expand',
-    );
   }
 
   function renderWorkValue(work) {
@@ -1765,6 +2062,14 @@ ${jdText}
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+  }
+
+  function makeId(prefix) {
+    const random =
+      typeof globalThis.crypto?.randomUUID === 'function'
+        ? globalThis.crypto.randomUUID()
+        : Math.random().toString(36).slice(2);
+    return `${prefix}-${Date.now()}-${random}`;
   }
 
   function escapeHtml(value) {
