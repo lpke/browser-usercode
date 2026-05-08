@@ -36,11 +36,10 @@
 
     // Tech names are matched against these regexes.
     goodTech: [
-      /TypeScript/i,
+      /JavaScript|TypeScript/i,
       /React/i,
       /Node(?:\.js)?/i,
       /Next(?:\.js)?/i,
-      /GraphQL/i,
     ],
     badTech: [
       /\.NET/i,
@@ -108,6 +107,7 @@
 
   const PANEL_ID = 'job-scraper-llm-panel';
   const JSON_WINDOW_ID = 'job-scraper-llm-json-window';
+  const DEBUG_WINDOW_ID = 'job-scraper-llm-debug-window';
   const PANEL_POSITION_KEY = 'jobScraperLlmPanelPosition';
   const PANEL_COLLAPSED_KEY = 'jobScraperLlmPanelCollapsed';
   const OLLAMA_QUEUE_KEY = 'jobScraperLlmOllamaQueue';
@@ -129,10 +129,13 @@
     panel: null,
     jsonWindow: null,
     jsonContent: null,
+    debugWindow: null,
+    debugContent: null,
     content: null,
     titleElement: null,
     currentResult: null,
     currentRawJson: '',
+    currentOllamaDebug: null,
     currentJobText: '',
     currentPayEvidence: null,
     currentError: null,
@@ -181,7 +184,8 @@
   function addStyles() {
     GM_addStyle(`
       #${PANEL_ID},
-      #${JSON_WINDOW_ID} {
+      #${JSON_WINDOW_ID},
+      #${DEBUG_WINDOW_ID} {
         position: fixed;
         z-index: 2147483647;
         background: rgba(17, 24, 39, 0.94);
@@ -201,7 +205,8 @@
         max-height: calc(100vh - 120px);
       }
 
-      #${JSON_WINDOW_ID} {
+      #${JSON_WINDOW_ID},
+      #${DEBUG_WINDOW_ID} {
         width: min(620px, calc(100vw - 24px));
         height: min(520px, calc(100vh - 24px));
         min-width: 320px;
@@ -211,7 +216,8 @@
       }
 
       #${PANEL_ID}, #${PANEL_ID} *,
-      #${JSON_WINDOW_ID}, #${JSON_WINDOW_ID} * {
+      #${JSON_WINDOW_ID}, #${JSON_WINDOW_ID} *,
+      #${DEBUG_WINDOW_ID}, #${DEBUG_WINDOW_ID} * {
         box-sizing: border-box;
       }
 
@@ -224,7 +230,8 @@
       }
 
       #${PANEL_ID} .job-scraper-llm__header,
-      #${JSON_WINDOW_ID} .job-scraper-llm__header {
+      #${JSON_WINDOW_ID} .job-scraper-llm__header,
+      #${DEBUG_WINDOW_ID} .job-scraper-llm__header {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -240,7 +247,8 @@
       }
 
       #${PANEL_ID} .job-scraper-llm__title,
-      #${JSON_WINDOW_ID} .job-scraper-llm__title {
+      #${JSON_WINDOW_ID} .job-scraper-llm__title,
+      #${DEBUG_WINDOW_ID} .job-scraper-llm__title {
         flex: 1 1 auto;
         min-width: 0;
         color: #ffffff;
@@ -252,7 +260,8 @@
       }
 
       #${PANEL_ID} .job-scraper-llm__controls,
-      #${JSON_WINDOW_ID} .job-scraper-llm__controls {
+      #${JSON_WINDOW_ID} .job-scraper-llm__controls,
+      #${DEBUG_WINDOW_ID} .job-scraper-llm__controls {
         display: flex;
         flex: 0 0 auto;
         gap: 4px;
@@ -266,7 +275,8 @@
       }
 
       #${PANEL_ID} .job-scraper-llm__button,
-      #${JSON_WINDOW_ID} .job-scraper-llm__button {
+      #${JSON_WINDOW_ID} .job-scraper-llm__button,
+      #${DEBUG_WINDOW_ID} .job-scraper-llm__button {
         appearance: none;
         border: 1px solid rgba(255, 255, 255, 0.2);
         border-radius: 6px;
@@ -282,7 +292,8 @@
       }
 
       #${PANEL_ID} .job-scraper-llm__button:hover,
-      #${JSON_WINDOW_ID} .job-scraper-llm__button:hover {
+      #${JSON_WINDOW_ID} .job-scraper-llm__button:hover,
+      #${DEBUG_WINDOW_ID} .job-scraper-llm__button:hover {
         background: rgba(255, 255, 255, 0.16);
       }
 
@@ -297,7 +308,8 @@
       }
 
       #${PANEL_ID} .job-scraper-llm__button:disabled,
-      #${JSON_WINDOW_ID} .job-scraper-llm__button:disabled {
+      #${JSON_WINDOW_ID} .job-scraper-llm__button:disabled,
+      #${DEBUG_WINDOW_ID} .job-scraper-llm__button:disabled {
         cursor: default;
         opacity: 0.48;
       }
@@ -342,13 +354,15 @@
         outline: none;
       }
 
-      #${JSON_WINDOW_ID} .job-scraper-llm__json-body {
+      #${JSON_WINDOW_ID} .job-scraper-llm__json-body,
+      #${DEBUG_WINDOW_ID} .job-scraper-llm__json-body {
         height: calc(100% - 42px);
         overflow: auto;
         padding: 12px;
       }
 
-      #${JSON_WINDOW_ID} .job-scraper-llm__json-view {
+      #${JSON_WINDOW_ID} .job-scraper-llm__json-view,
+      #${DEBUG_WINDOW_ID} .job-scraper-llm__json-view {
         margin: 0;
         padding: 8px;
         white-space: pre-wrap;
@@ -521,6 +535,7 @@
               <button class="job-scraper-llm__menu-item" type="button" role="menuitem" data-menu-action="copy-results">⎘ Copy results</button>
               <button class="job-scraper-llm__menu-item" type="button" role="menuitem" data-menu-action="copy-url">⎘ Copy URL</button>
               <button class="job-scraper-llm__menu-item" type="button" role="menuitem" data-menu-action="view-json">◎ View JSON</button>
+              <button class="job-scraper-llm__menu-item" type="button" role="menuitem" data-menu-action="view-debug">⚠ View Debug</button>
             </div>
           </div>
           <button class="job-scraper-llm__button" type="button" data-action="watch-toggle" title="Stop watching job changes" aria-label="Stop watching job changes" aria-pressed="false">▪</button>
@@ -709,6 +724,11 @@
 
     if (action === 'view-json') {
       openJsonWindow();
+      return;
+    }
+
+    if (action === 'view-debug') {
+      openDebugWindow();
     }
   }
 
@@ -813,20 +833,76 @@
     win.hidden = false;
   }
 
+  function openDebugWindow() {
+    const win = ensureDebugWindow();
+    updateDebugWindowContent();
+    win.hidden = false;
+  }
+
   function ensureJsonWindow() {
     if (state.jsonWindow && document.body.contains(state.jsonWindow)) {
       return state.jsonWindow;
     }
 
+    const win = createTextWindow({
+      id: JSON_WINDOW_ID,
+      label: 'Raw LLM JSON output',
+      title: 'Raw JSON',
+      copyAction: 'copy-json',
+      closeAction: 'close-json',
+    });
+
+    state.jsonWindow = win;
+    state.jsonContent = win.querySelector('.job-scraper-llm__json-view');
+    positionTextWindow(win);
+    installTextWindowEvents(win, {
+      copyAction: 'copy-json',
+      closeAction: 'close-json',
+      copy: copyJson,
+      close: closeJsonWindow,
+    });
+    document.body.appendChild(win);
+
+    return win;
+  }
+
+  function ensureDebugWindow() {
+    if (state.debugWindow && document.body.contains(state.debugWindow)) {
+      return state.debugWindow;
+    }
+
+    const win = createTextWindow({
+      id: DEBUG_WINDOW_ID,
+      label: 'LLM debug output',
+      title: 'Debug',
+      copyAction: 'copy-debug',
+      closeAction: 'close-debug',
+    });
+
+    state.debugWindow = win;
+    state.debugContent = win.querySelector('.job-scraper-llm__json-view');
+    positionTextWindow(win);
+    installTextWindowEvents(win, {
+      copyAction: 'copy-debug',
+      closeAction: 'close-debug',
+      copy: copyDebug,
+      close: closeDebugWindow,
+    });
+    document.body.appendChild(win);
+
+    return win;
+  }
+
+  function createTextWindow({ id, label, title, copyAction, closeAction }) {
     const win = document.createElement('section');
-    win.id = JSON_WINDOW_ID;
-    win.setAttribute('aria-label', 'Raw LLM JSON output');
+    win.id = id;
+    win.setAttribute('aria-label', label);
     win.innerHTML = `
       <div class="job-scraper-llm__header">
-        <div class="job-scraper-llm__title">Raw JSON</div>
+        <div class="job-scraper-llm__title">${escapeHtml(title)}</div>
         <div class="job-scraper-llm__controls">
-          <button class="job-scraper-llm__button" type="button" data-action="copy-json" title="Copy JSON" aria-label="Copy JSON">⎘</button>
-          <button class="job-scraper-llm__button" type="button" data-action="close-json" title="Close JSON" aria-label="Close JSON">×</button>
+          <button class="job-scraper-llm__button" type="button" data-action="${escapeHtml(copyAction)}" title="Copy ${escapeHtml(title)}" aria-label="Copy ${escapeHtml(title)}">⎘</button>
+          <button class="job-scraper-llm__button" type="button" data-action="${escapeHtml(closeAction)}" title="Close ${escapeHtml(title)}" aria-label="Close ${escapeHtml(title)}">×</button>
         </div>
       </div>
       <div class="job-scraper-llm__json-body">
@@ -834,16 +910,10 @@
       </div>
     `;
 
-    state.jsonWindow = win;
-    state.jsonContent = win.querySelector('.job-scraper-llm__json-view');
-    positionJsonWindow(win);
-    installJsonWindowEvents(win);
-    document.body.appendChild(win);
-
     return win;
   }
 
-  function positionJsonWindow(win) {
+  function positionTextWindow(win) {
     const panelRect = state.panel?.getBoundingClientRect();
     const width = Math.min(620, window.innerWidth - 24);
     const height = Math.min(520, window.innerHeight - 24);
@@ -857,10 +927,10 @@
     win.style.right = 'auto';
   }
 
-  function installJsonWindowEvents(win) {
+  function installTextWindowEvents(win, { copyAction, closeAction, copy, close }) {
     const header = win.querySelector('.job-scraper-llm__header');
-    const copyButton = win.querySelector('[data-action="copy-json"]');
-    const closeButton = win.querySelector('[data-action="close-json"]');
+    const copyButton = win.querySelector(`[data-action="${copyAction}"]`);
+    const closeButton = win.querySelector(`[data-action="${closeAction}"]`);
     let dragStart = null;
 
     header.addEventListener('mousedown', (event) => {
@@ -903,7 +973,7 @@
 
     copyButton.addEventListener('click', (event) => {
       event.stopPropagation();
-      copyJson();
+      copy();
     });
 
     copyButton.addEventListener('mousedown', (event) => {
@@ -912,7 +982,7 @@
 
     closeButton.addEventListener('click', (event) => {
       event.stopPropagation();
-      closeJsonWindow();
+      close();
     });
 
     closeButton.addEventListener('mousedown', (event) => {
@@ -927,6 +997,13 @@
     GM_setClipboard(text, 'text');
   }
 
+  function copyDebug() {
+    const text = state.debugContent?.textContent || debugWindowText();
+    if (!text) return;
+
+    GM_setClipboard(text, 'text');
+  }
+
   function closeJsonWindow() {
     if (!state.jsonWindow) return;
 
@@ -935,10 +1012,24 @@
     state.jsonContent = null;
   }
 
+  function closeDebugWindow() {
+    if (!state.debugWindow) return;
+
+    state.debugWindow.remove();
+    state.debugWindow = null;
+    state.debugContent = null;
+  }
+
   function updateJsonWindowContent() {
     if (!state.jsonContent) return;
 
     state.jsonContent.textContent = jsonWindowText();
+  }
+
+  function updateDebugWindowContent() {
+    if (!state.debugContent) return;
+
+    state.debugContent.textContent = debugWindowText();
   }
 
   function jsonWindowText() {
@@ -949,6 +1040,12 @@
         : '') ||
       'No JSON output available yet.'
     );
+  }
+
+  function debugWindowText() {
+    return state.currentOllamaDebug
+      ? JSON.stringify(state.currentOllamaDebug, null, 2)
+      : 'No debug output available yet.';
   }
 
   function scheduleRun(delayMs, options = {}) {
@@ -1004,15 +1101,20 @@
 
       state.lastSignature = signature;
       renderLoading('Analysing...');
-      const { result, rawJson } = await queryLLM(extraction.text, (message) => {
-        if (runId === state.runId) renderLoading(message);
-      });
+      const { result, rawJson, debug } = await queryLLM(
+        extraction.text,
+        (message) => {
+          if (runId === state.runId) renderLoading(message);
+        },
+      );
       if (runId !== state.runId) return;
 
       state.currentResult = result;
       state.currentRawJson = rawJson;
+      state.currentOllamaDebug = debug;
       state.currentError = null;
       updateJsonWindowContent();
+      updateDebugWindowContent();
       applyResultState(result);
       renderSuccess(result);
     } catch (error) {
@@ -1021,8 +1123,10 @@
       const friendly = toUserError(error);
       state.currentResult = null;
       state.currentRawJson = '';
+      state.currentOllamaDebug = error.debug || null;
       state.currentError = friendly;
       updateJsonWindowContent();
+      updateDebugWindowContent();
       state.currentPayEvidence = null;
       state.assessmentStatus = 'uncertain';
       state.assessment = null;
@@ -1399,34 +1503,85 @@
   }
 
   async function queryLLM(jdText, onStatus = () => {}) {
-    const raw = await requestOllamaQueued(jdText, onStatus);
-    const parsed = parseJsonResponse(raw);
-    return {
-      result: validateResult(parsed),
-      rawJson: raw,
-    };
+    const ollama = await requestOllamaQueued(jdText, onStatus);
+    const raw = ollama.response;
+
+    try {
+      const parsed = parseJsonResponse(raw);
+      return {
+        result: validateResult(parsed),
+        rawJson: raw,
+        debug: ollama.debug,
+      };
+    } catch (error) {
+      error.debug = ollama.debug;
+      throw error;
+    }
   }
 
   async function requestOllamaQueued(jdText, onStatus = () => {}) {
     let release = null;
+    const queueStartedAt = Date.now();
+    let queueFinishedAt = queueStartedAt;
 
     try {
       release = await acquireOllamaQueueSlot(onStatus);
+      queueFinishedAt = Date.now();
     } catch (error) {
+      queueFinishedAt = Date.now();
       console.warn(
         '[Job Scraper LLM] Queue unavailable; running directly',
         error,
       );
       onStatus('Analysing...');
-      return requestOllama(jdText);
+      try {
+        const response = await requestOllama(jdText);
+        response.debug.queue = queueDebug('direct_after_queue_error', {
+          startedAt: queueStartedAt,
+          finishedAt: queueFinishedAt,
+          error,
+        });
+        return response;
+      } catch (requestError) {
+        attachQueueDebug(requestError, 'direct_after_queue_error', {
+          startedAt: queueStartedAt,
+          finishedAt: queueFinishedAt,
+          error,
+        });
+        throw requestError;
+      }
     }
 
     try {
       onStatus('Analysing...');
-      return await requestOllama(jdText);
+      const response = await requestOllama(jdText);
+      response.debug.queue = queueDebug('queued', {
+        startedAt: queueStartedAt,
+        finishedAt: queueFinishedAt,
+      });
+      return response;
+    } catch (error) {
+      attachQueueDebug(error, 'queued', {
+        startedAt: queueStartedAt,
+        finishedAt: queueFinishedAt,
+      });
+      throw error;
     } finally {
       releaseOllamaQueueSlot(release);
     }
+  }
+
+  function attachQueueDebug(error, mode, options) {
+    if (!error.debug) return;
+    error.debug.queue = queueDebug(mode, options);
+  }
+
+  function queueDebug(mode, { startedAt, finishedAt = Date.now(), error = null }) {
+    return {
+      mode,
+      waitMs: finishedAt - startedAt,
+      error: error?.message || '',
+    };
   }
 
   function acquireOllamaQueueSlot(onStatus = () => {}) {
@@ -1619,52 +1774,175 @@
 
   function requestOllama(jdText) {
     return new Promise((resolve, reject) => {
+      const prompt = buildPrompt(jdText, RESULT_SCHEMA);
+      const payload = {
+        model: CONFIG.model,
+        prompt,
+        format: RESULT_SCHEMA,
+        stream: false,
+        keep_alive: CONFIG.keepAlive,
+        options: {
+          temperature: 0,
+          num_predict: CONFIG.numPredict,
+        },
+      };
+      const startedAt = Date.now();
+
       GM_xmlhttpRequest({
         method: 'POST',
         url: `${CONFIG.ollamaUrl.replace(/\/+$/, '')}/api/generate`,
         headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify({
-          model: CONFIG.model,
-          prompt: buildPrompt(jdText, RESULT_SCHEMA),
-          format: RESULT_SCHEMA,
-          stream: false,
-          options: {
-            temperature: 0,
-            num_predict: CONFIG.numPredict,
-          },
-        }),
+        data: JSON.stringify(payload),
         timeout: CONFIG.timeout,
         onload: (res) => {
           try {
             if (res.status < 200 || res.status >= 300) {
-              reject(
-                userError('offline', `Ollama returned HTTP ${res.status}`),
+              const error = userError(
+                'offline',
+                `Ollama returned HTTP ${res.status}`,
+                res.responseText,
               );
+              error.debug = buildOllamaDebug({
+                data: null,
+                httpResponse: res,
+                payload,
+                prompt,
+                jdText,
+                startedAt,
+              });
+              reject(error);
               return;
             }
 
             const data = JSON.parse(res.responseText);
-            resolve(
+            const response =
               typeof data.response === 'string'
                 ? data.response
-                : JSON.stringify(data.response),
-            );
+                : JSON.stringify(data.response);
+            resolve({
+              response,
+              debug: buildOllamaDebug({
+                data,
+                httpResponse: res,
+                payload,
+                prompt,
+                jdText,
+                startedAt,
+              }),
+            });
           } catch (error) {
-            reject(
-              userError(
-                'parse',
-                'Could not parse Ollama response',
-                res.responseText,
-                error,
-              ),
+            const parseError = userError(
+              'parse',
+              'Could not parse Ollama response',
+              res.responseText,
+              error,
             );
+            parseError.debug = buildOllamaDebug({
+              data: null,
+              httpResponse: res,
+              payload,
+              prompt,
+              jdText,
+              startedAt,
+            });
+            reject(parseError);
           }
         },
-        onerror: () =>
-          reject(userError('offline', 'LLM offline - is Ollama running?')),
-        ontimeout: () => reject(userError('offline', 'LLM timeout')),
+        onerror: () => {
+          const error = userError('offline', 'LLM offline - is Ollama running?');
+          error.debug = buildOllamaDebug({
+            data: null,
+            httpResponse: null,
+            payload,
+            prompt,
+            jdText,
+            startedAt,
+          });
+          reject(error);
+        },
+        ontimeout: () => {
+          const error = userError('offline', 'LLM timeout');
+          error.debug = buildOllamaDebug({
+            data: null,
+            httpResponse: null,
+            payload,
+            prompt,
+            jdText,
+            startedAt,
+          });
+          reject(error);
+        },
       });
     });
+  }
+
+  function buildOllamaDebug({
+    data,
+    httpResponse,
+    payload,
+    prompt,
+    jdText,
+    startedAt,
+  }) {
+    const now = Date.now();
+    const promptEvalMs = nsToMs(data?.prompt_eval_duration);
+    const evalMs = nsToMs(data?.eval_duration);
+
+    return {
+      capturedAt: new Date(now).toISOString(),
+      page: {
+        url: location.href,
+        site: state.site,
+        title: state.jobTitle || null,
+      },
+      request: {
+        endpoint: `${CONFIG.ollamaUrl.replace(/\/+$/, '')}/api/generate`,
+        model: payload.model,
+        stream: payload.stream,
+        keepAlive: payload.keep_alive,
+        format: 'json_schema',
+        options: payload.options,
+        timeoutMs: CONFIG.timeout,
+        promptChars: prompt.length,
+        jobTextChars: String(jdText || '').length,
+        schemaChars: JSON.stringify(payload.format).length,
+      },
+      http: {
+        status: httpResponse?.status ?? null,
+        statusText: httpResponse?.statusText || '',
+        wallMs: now - startedAt,
+        responseChars: String(httpResponse?.responseText || '').length,
+      },
+      ollama: {
+        done: data?.done ?? null,
+        doneReason: data?.done_reason || '',
+        totalMs: nsToMs(data?.total_duration),
+        loadMs: nsToMs(data?.load_duration),
+        promptEvalMs,
+        evalMs,
+        promptEvalCount: numberOrNull(data?.prompt_eval_count),
+        evalCount: numberOrNull(data?.eval_count),
+        promptTokensPerSecond: tokensPerSecond(
+          data?.prompt_eval_count,
+          promptEvalMs,
+        ),
+        outputTokensPerSecond: tokensPerSecond(data?.eval_count, evalMs),
+        contextLength: Array.isArray(data?.context) ? data.context.length : 0,
+      },
+    };
+  }
+
+  function nsToMs(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return null;
+    return Math.round(number / 10000) / 100;
+  }
+
+  function tokensPerSecond(count, durationMs) {
+    const tokens = Number(count);
+    if (!Number.isFinite(tokens) || !Number.isFinite(durationMs)) return null;
+    if (durationMs <= 0) return null;
+    return Math.round((tokens / durationMs) * 100000) / 100;
   }
 
   function buildResultSchema() {
@@ -1733,19 +2011,15 @@
           : { type: 'string' },
         matches: { type: 'boolean' },
         confidence: enumStringSchema(VALID_FIT_CONFIDENCE),
-        details: { type: 'string' },
+        details: { type: 'string', maxLength: 120 },
       }),
     };
   }
 
   function buildPrompt(jdText, schema = RESULT_SCHEMA) {
-    const badCriteria = JSON.stringify(fitCriterionTexts(CONFIG.bad), null, 2);
-    const goodCriteria = JSON.stringify(
-      fitCriterionTexts(CONFIG.good),
-      null,
-      2,
-    );
-    const schemaText = JSON.stringify(schema, null, 2);
+    const badCriteria = JSON.stringify(fitCriterionTexts(CONFIG.bad));
+    const goodCriteria = JSON.stringify(fitCriterionTexts(CONFIG.good));
+    const schemaText = JSON.stringify(schema);
 
     return `You are a job listing data extractor. Analyse the following job description and return one JSON object that validates against this JSON Schema:
 
@@ -1761,6 +2035,7 @@ Rules:
 - For jobTitle: use [Job Title] metadata if present. Otherwise infer only if the title is explicit in the text. If unclear, use null
 - For fitChecks.bad: return exactly one object per bad criterion, same order, with criterion copied exactly
 - For fitChecks.good: return exactly one object per good criterion, same order, with criterion copied exactly
+- Keep fit check details concise. Use "" when matches is false and there is no important ambiguity or conflict
 - Fit check default is matches false with confidence "inconclusive". Use "low" only when some direct evidence supports matches true
 - matches true means the criterion statement is factually true for the listing, not merely relevant or evaluated
 - A fit check may be matches true only with confidence "low", "medium", or "high"; use "high" only for direct unambiguous evidence
@@ -2363,6 +2638,7 @@ ${jdText}
   function resetJobState() {
     state.currentResult = null;
     state.currentRawJson = '';
+    state.currentOllamaDebug = null;
     state.currentJobText = '';
     state.currentPayEvidence = null;
     state.currentError = null;
@@ -2371,6 +2647,7 @@ ${jdText}
     state.assessment = null;
     state.lastSignature = '';
     updateJsonWindowContent();
+    updateDebugWindowContent();
     renderPanelTitle();
   }
 
@@ -2826,14 +3103,14 @@ ${jdText}
       ? body
       : aboutTheJob;
 
-    addHtmlContextChunk(chunks, seen, 'linkedin-top-card', topCard, 1800);
-    addHtmlContextChunk(chunks, seen, 'linkedin-pay-area', payArea, 900);
+    addHtmlContextChunk(chunks, seen, 'linkedin-top-card', topCard, 1400);
+    addHtmlContextChunk(chunks, seen, 'linkedin-pay-area', payArea, 800);
     addHtmlContextChunk(
       chunks,
       seen,
       'linkedin-description-html',
       descriptionRoot,
-      3200,
+      1600,
     );
 
     return chunks;
@@ -2871,9 +3148,9 @@ ${jdText}
       seen,
       'seek-location-work',
       findSeekLocationWorkRoot(),
-      1200,
+      1000,
     );
-    addHtmlContextChunk(chunks, seen, 'seek-description-html', body, 3200);
+    addHtmlContextChunk(chunks, seen, 'seek-description-html', body, 1600);
 
     return chunks;
   }
