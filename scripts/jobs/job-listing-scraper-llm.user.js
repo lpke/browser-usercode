@@ -30,13 +30,16 @@
   'use strict';
 
   const CONFIG = {
-    good: ['pay > 165k or $110+/hour', 'fully remote'],
+    good: [
+      ['pay > 165k or $110+/hour', 'pay'],
+      ['fully remote', 'work-arrangement'],
+    ],
     bad: [
-      'pay < 160k or $100/hour',
-      'hybrid >= 3 days in office',
-      'on-site role',
+      ['pay < 160k or $100/hour', 'pay'],
+      ['hybrid >= 3 days in office', 'work-arrangement'],
+      ['on-site role', 'work-arrangement'],
       '.NET, Java, C#, C++ required',
-      'hybrid but not based in Sydney/NSW',
+      ['hybrid but not based in Sydney/NSW', 'work-arrangement'],
     ],
     goodTech: [
       'TypeScript',
@@ -90,6 +93,12 @@
   const VALID_WORK_TYPES = new Set(['remote', 'hybrid', 'onsite', 'unknown']);
   const VALID_PAY_TYPES = new Set(['annual', 'daily', 'hourly', 'unknown']);
   const VALID_CONFIDENCE = new Set(['high', 'medium', 'low']);
+  const VALID_FIT_CONFIDENCE = new Set([
+    'high',
+    'medium',
+    'low',
+    'inconclusive',
+  ]);
   const VALID_ASSESSMENT = new Set(['good', 'bad', 'uncertain']);
 
   const state = {
@@ -99,6 +108,7 @@
     titleElement: null,
     currentResult: null,
     currentJobText: '',
+    currentPayEvidence: null,
     currentError: null,
     jobTitle: '',
     assessmentStatus: 'uncertain',
@@ -597,6 +607,7 @@
 
       const signature = `${location.href}\n${extraction.text.slice(0, 1500)}`;
       state.currentJobText = extraction.text;
+      state.currentPayEvidence = extraction.payEvidence || null;
       state.jobTitle = extraction.title || '';
       renderPanelTitle();
 
@@ -623,6 +634,7 @@
       const friendly = toUserError(error);
       state.currentResult = null;
       state.currentError = friendly;
+      state.currentPayEvidence = null;
       state.assessmentStatus = 'uncertain';
       state.assessment = null;
       renderPanelTitle();
@@ -655,35 +667,48 @@
     const aboutTheJob = getLinkedInDescriptionRoot();
     const body = getLinkedInDescriptionBody(aboutTheJob);
 
-    const bodyText = cleanDescriptionText(getText(body || aboutTheJob));
+    const bodyText = getLinkedInDescriptionText(aboutTheJob, body);
     if (!bodyText) return null;
 
     const metadata = [];
-    const headerRoot =
-      firstElement([
-        '.job-details-jobs-unified-top-card',
-        '.jobs-unified-top-card',
-        '.jobs-details-top-card',
-        'main',
-      ]) || document.body;
+    const detailsRoot = getLinkedInDetailsRoot(aboutTheJob);
+    const headerRoot = getLinkedInHeaderRoot(detailsRoot);
     const headerText = cleanMetadataText(getText(headerRoot));
     const beforeDescription = textBeforeNeedle(headerText, 'About the job');
-    const workplace = extractWorkplaceType(beforeDescription || headerText);
-    const location = extractLinkedInLocation(beforeDescription || headerText);
-    const salary = extractSalaryLine(beforeDescription || headerText);
-    const details = extractLinkedInDetails(beforeDescription || headerText);
+    const headerContext = beforeDescription || headerText;
+    const workplace = extractWorkplaceType(headerContext);
+    const location = extractLinkedInLocation(headerContext);
+    const payPills = extractLinkedInPayPills(headerRoot);
+    const paySources = normalizeList([
+      ...payPills,
+      extractSalaryLine(headerContext),
+      ...extractSalarySnippets(bodyText),
+    ]);
+    const salary = paySources.slice(0, 3).join(' | ');
+    const payEvidence = buildPayEvidence(paySources, 'LinkedIn');
+    const details = extractLinkedInDetails(headerContext);
     const title = extractLinkedInTitle(headerRoot);
+    const htmlContext = buildLinkedInHtmlContext({
+      detailsRoot,
+      headerRoot,
+      aboutTheJob,
+      body,
+      paySources,
+    });
 
     addMetadata(metadata, 'Job Title', title);
     addMetadata(metadata, 'Workplace Type', workplace);
+    addMetadata(metadata, 'LinkedIn Pay Pill', payPills.join(' | '));
     addMetadata(metadata, 'Salary Insight', salary);
+    addMetadata(metadata, 'Pay Type', payEvidence?.type);
     addMetadata(metadata, 'Location', location);
     addMetadata(metadata, 'Job Details', details);
 
     return {
       bodyText,
       title,
-      text: composeJobText(metadata, bodyText),
+      payEvidence,
+      text: composeJobText(metadata, bodyText, htmlContext),
     };
   }
 
@@ -705,19 +730,27 @@
     const salary = cleanMetadataText(
       getText('[data-automation="job-detail-salary"]'),
     );
+    const paySources = normalizeList([
+      salary,
+      ...extractSalarySnippets(bodyText),
+    ]);
+    const payEvidence = buildPayEvidence(paySources, 'SEEK');
     const title = extractSeekTitle();
     const metadata = [];
+    const htmlContext = buildSeekHtmlContext(body);
 
     addMetadata(metadata, 'Job Title', title);
     addMetadata(metadata, 'Workplace Type', extractWorkplaceType(locationText));
-    addMetadata(metadata, 'Salary Badge', salary);
+    addMetadata(metadata, 'Salary Badge', paySources.slice(0, 3).join(' | '));
+    addMetadata(metadata, 'Pay Type', payEvidence?.type);
     addMetadata(metadata, 'Work Type', workType);
     addMetadata(metadata, 'Location', stripWorkplaceSuffix(locationText));
 
     return {
       bodyText,
       title,
-      text: composeJobText(metadata, bodyText),
+      payEvidence,
+      text: composeJobText(metadata, bodyText, htmlContext),
     };
   }
 
@@ -738,14 +771,19 @@
   }
 
   function hasExtractableDescription() {
-    const body =
-      state.site === 'linkedin'
-        ? getLinkedInDescriptionBody(getLinkedInDescriptionRoot())
-        : firstElement([
-            '[data-automation="jobAdDetails"]',
-            '[data-testid="jobAdDetails"]',
-            '[data-automation="job-ad-details"]',
-          ]);
+    if (state.site === 'linkedin') {
+      const root = getLinkedInDescriptionRoot();
+      return getLinkedInDescriptionText(
+        root,
+        getLinkedInDescriptionBody(root),
+      ).length >= 80;
+    }
+
+    const body = firstElement([
+      '[data-automation="jobAdDetails"]',
+      '[data-testid="jobAdDetails"]',
+      '[data-automation="job-ad-details"]',
+    ]);
 
     return cleanDescriptionText(getText(body)).length >= 80;
   }
@@ -801,7 +839,7 @@
     while (Date.now() < deadline) {
       const root = getLinkedInDescriptionRoot();
       const body = getLinkedInDescriptionBody(root);
-      const bodyText = cleanDescriptionText(getText(body || root));
+      const bodyText = getLinkedInDescriptionText(root, body);
       const moreControl = findLinkedInDescriptionMoreControl(root);
 
       if (moreControl && attempts < 3) {
@@ -848,6 +886,60 @@
         '.description__text',
         '#job-details',
       ])
+    );
+  }
+
+  function getLinkedInDescriptionText(
+    root,
+    body = getLinkedInDescriptionBody(root),
+  ) {
+    return (
+      cleanDescriptionText(getText(body)) ||
+      cleanDescriptionText(getText(root))
+    );
+  }
+
+  function getLinkedInDetailsRoot(aboutTheJob) {
+    const closestSelectors = [
+      '[data-sdui-screen*="SemanticJobDetails"]',
+      '.jobs-search__job-details--container',
+      '.jobs-search__job-details',
+      '.jobs-details',
+      '.jobs-details__main-content',
+      '.scaffold-layout__detail',
+      '[role="main"]',
+    ];
+
+    for (const selector of closestSelectors) {
+      const element = aboutTheJob?.closest(selector);
+      if (element) return element;
+    }
+
+    return (
+      firstElement([
+        '[data-sdui-screen*="SemanticJobDetails"]',
+        '.jobs-search__job-details--container',
+        '.jobs-search__job-details',
+        '.jobs-details',
+        '.jobs-details__main-content',
+        '.scaffold-layout__detail',
+      ]) || document.body
+    );
+  }
+
+  function getLinkedInHeaderRoot(detailsRoot) {
+    const headerSelectors = [
+      '.job-details-jobs-unified-top-card',
+      '.jobs-unified-top-card',
+      '.jobs-details-top-card',
+    ];
+
+    return (
+      firstElementFrom(detailsRoot, headerSelectors) ||
+      firstElement(headerSelectors) ||
+      detailsRoot ||
+      firstElement(['main']) ||
+      document.body
     );
   }
 
@@ -1194,12 +1286,12 @@
 
   function buildPrompt(jdText) {
     const badCriteria = JSON.stringify(
-      Array.isArray(CONFIG.bad) ? CONFIG.bad : [],
+      fitCriterionTexts(CONFIG.bad),
       null,
       2,
     );
     const goodCriteria = JSON.stringify(
-      Array.isArray(CONFIG.good) ? CONFIG.good : [],
+      fitCriterionTexts(CONFIG.good),
       null,
       2,
     );
@@ -1215,7 +1307,7 @@
     "confidence": "high" | "medium" | "low"
   },
   "pay": {
-    "range": "<formatted string, eg '$130k-$160k + super' or null if not found>",
+    "range": "<formatted string, eg '$130k-$160k + super' or '$100-$115/hour', or null if not found>",
     "type": "annual" | "daily" | "hourly" | "unknown",
     "includesSuper": <boolean>,
     "isOTE": <boolean>,
@@ -1230,7 +1322,7 @@
       {
         "criterion": "<exact bad criterion string>",
         "matches": <boolean>,
-        "confidence": "high" | "medium" | "low",
+        "confidence": "high" | "medium" | "low" | "inconclusive",
         "details": "<brief evidence note>"
       }
     ],
@@ -1238,7 +1330,7 @@
       {
         "criterion": "<exact good criterion string>",
         "matches": <boolean>,
-        "confidence": "high" | "medium" | "low",
+        "confidence": "high" | "medium" | "low" | "inconclusive",
         "details": "<brief evidence note>"
       }
     ]
@@ -1255,8 +1347,12 @@ Rules:
 - For jobTitle: use [Job Title] metadata if present. Otherwise infer only if the title is explicit in the text. If unclear, use null
 - For fitChecks.bad: return exactly one object per bad criterion, same order, with criterion copied exactly
 - For fitChecks.good: return exactly one object per good criterion, same order, with criterion copied exactly
-- A fit check may be matches true with high confidence only when the listing directly and unambiguously satisfies the criterion
-- If a fit criterion is absent, ambiguous, contradicted, or only weakly inferred, set matches false and confidence low or medium
+- Fit check default is matches false with confidence "inconclusive". Use "low" only when some direct evidence supports matches true
+- matches true means the criterion statement is factually true for the listing, not merely relevant or evaluated
+- A fit check may be matches true only with confidence "low", "medium", or "high"; use "high" only for direct unambiguous evidence
+- For thresholds, determine the actual value first; contradictory thresholds cannot both be true
+- Do not mark mutually exclusive fit criteria true. If evidence conflicts, set both false with confidence "inconclusive"
+- If a fit criterion is absent, irrelevant, contradicted, or too unclear, set matches false with confidence "inconclusive"
 - Evaluate each fit criterion independently from the raw listing. Do not infer one criterion from another
 - "required": tech explicitly required of the candidate: requirements, must-have, essential, mandatory, "you have", "what you'll bring", "strong/proven experience", "expertise in", or "X+ years"
 - "optional": tech under nice-to-have, preferred, desirable, bonus, advantage, familiarity, exposure, or tools/platforms merely mentioned without clear requirement
@@ -1265,7 +1361,8 @@ Rules:
 - If the same tech appears as both required and optional, include it only in required
 - Order tech arrays from strongest and most prominent evidence to weakest: core role tech, title/summary tech, repeated tech, and explicit must-have tech first. Do not sort alphabetically
 - For workArrangement: if the listing mentions specific days, extract the number. If conflicting signals exist, set confidence to "low" and note in details
-- For pay: normalise to AUD annual where possible. If only hourly/daily is given, state the raw value and set type accordingly
+- Input has metadata, compact source HTML, and plain text. Cross-check them; prefer explicit metadata/source HTML over inference
+- For pay: preserve frequency; never convert hourly/daily to annual. Compare fit thresholds only with the same frequency
 - If a field cannot be determined, set it to null/unknown with confidence "low"
 - Only include programming languages, frameworks, libraries, tools, platforms, and infrastructure in techStack. Do not include soft skills or methodologies
 - Return ONLY the JSON object, no other text
@@ -1306,11 +1403,15 @@ ${jdText}
     const work = input.workArrangement || {};
     const pay = input.pay || {};
     const tech = input.techStack || {};
-    const fitChecks = {
+    let fitChecks = {
       bad: normalizeFitChecks(input.fitChecks?.bad, CONFIG.bad),
       good: normalizeFitChecks(input.fitChecks?.good, CONFIG.good),
     };
-    const assessment = buildAssessment(fitChecks);
+    fitChecks = applyPayEvidenceToFitChecks(
+      fitChecks,
+      state.currentPayEvidence,
+    );
+    fitChecks = resolveFitCheckConflicts(fitChecks);
     const result = {
       jobTitle: cleanJobTitle(input.jobTitle),
       workArrangement: {
@@ -1336,8 +1437,11 @@ ${jdText}
         ),
       },
       fitChecks,
-      assessment,
+      assessment: null,
     };
+
+    applyPayEvidenceToResult(result, state.currentPayEvidence);
+    result.assessment = buildAssessment(result.fitChecks);
 
     if (
       !input.workArrangement ||
@@ -1377,20 +1481,25 @@ ${jdText}
 
     const work = result.workArrangement;
     const pay = result.pay;
+    const summaryLines = [
+      renderValueLine('Work', renderWorkValue(work), hasWorkValue(work)),
+      renderValueLine('Pay', renderPayValue(pay), hasPayValue(pay)),
+    ].join('');
+    const techLines = [
+      renderTechLine('Required', result.techStack.required),
+      renderTechLine('Optional', result.techStack.optional),
+    ].join('');
+    const fitCriteria = renderFitCriteria(result);
+    const divider =
+      summaryLines && (techLines || fitCriteria)
+        ? '<div class="job-scraper-llm__divider"></div>'
+        : '';
 
     state.content.innerHTML = `
-      <div class="job-scraper-llm__line">
-        <span class="job-scraper-llm__label">Work:</span>
-        ${renderWorkValue(work)}
-      </div>
-      <div class="job-scraper-llm__line">
-        <span class="job-scraper-llm__label">Pay:</span>
-        ${renderPayValue(pay)}
-      </div>
-      <div class="job-scraper-llm__divider"></div>
-      ${renderTechLine('Required', result.techStack.required)}
-      ${renderTechLine('Optional', result.techStack.optional)}
-      ${renderFitCriteria(result)}
+      ${summaryLines}
+      ${divider}
+      ${techLines}
+      ${fitCriteria}
     `;
     window.requestAnimationFrame(updateTechClampState);
   }
@@ -1414,10 +1523,23 @@ ${jdText}
   }
 
   function renderTechLine(label, values) {
+    if (!values.length) return '';
+
     return `
       <div class="job-scraper-llm__line job-scraper-llm__tech-line" data-tech-line>
         <span class="job-scraper-llm__label">${escapeHtml(label)}:</span>
-        ${values.length ? values.map(renderTechItem).join(', ') : 'None found'}
+        ${values.map(renderTechItem).join(', ')}
+      </div>
+    `;
+  }
+
+  function renderValueLine(label, value, shouldShow) {
+    if (!shouldShow) return '';
+
+    return `
+      <div class="job-scraper-llm__line">
+        <span class="job-scraper-llm__label">${escapeHtml(label)}:</span>
+        ${value}
       </div>
     `;
   }
@@ -1447,13 +1569,14 @@ ${jdText}
     const icon = CONFIG.statusIcons?.[item.kind] || '';
     const color = statusColor(item.kind);
     const style = color ? ` style="color: ${escapeHtml(color)}"` : '';
+    const isHighConfidence = item.check.confidence === 'high';
     const textStyle =
-      item.active && color ? ` style="color: ${escapeHtml(color)}"` : '';
+      isHighConfidence && color ? ` style="color: ${escapeHtml(color)}"` : '';
     const details = cleanMetadataText(item.check.details);
     const title = details ? ` title="${escapeHtml(details)}"` : '';
     const confidence = renderConfidenceSymbol(
       item.check.confidence,
-      item.check.confidence !== 'high',
+      hasActionableFitConfidence(item.check.confidence) && !isHighConfidence,
     );
 
     return `
@@ -1506,7 +1629,10 @@ ${jdText}
   }
 
   function renderWorkValue(work) {
-    return `${escapeHtml(workText(work))}${renderConfidenceSymbol(work?.confidence, hasWorkValue(work))}`;
+    const text = escapeHtml(workText(work));
+    const style = work?.type === 'remote' ? remoteWorkStyle() : '';
+    const value = style ? `<span${style}>${text}</span>` : text;
+    return `${value}${renderConfidenceSymbol(work?.confidence, hasWorkValue(work))}`;
   }
 
   function renderPayValue(pay) {
@@ -1522,16 +1648,26 @@ ${jdText}
   }
 
   function formatCopyText(result) {
-    const lines = [
+    const lines = compactTextLines([
       `Title: ${state.jobTitle || result.jobTitle || 'Unknown'}`,
       `Fit: ${formatAssessmentTitle(result.assessment)}`,
-      `Work: ${formatWork(result.workArrangement)}`,
-      `Pay: ${formatPay(result.pay)}`,
-      '',
-      'Tech:',
-      `Required: ${result.techStack.required.join(', ') || 'None found'}`,
-      `Optional: ${result.techStack.optional.join(', ') || 'None found'}`,
-    ];
+      hasWorkValue(result.workArrangement)
+        ? `Work: ${formatWork(result.workArrangement)}`
+        : '',
+      hasPayValue(result.pay) ? `Pay: ${formatPay(result.pay)}` : '',
+    ]);
+    const techLines = compactTextLines([
+      result.techStack.required.length
+        ? `Required: ${result.techStack.required.join(', ')}`
+        : '',
+      result.techStack.optional.length
+        ? `Optional: ${result.techStack.optional.join(', ')}`
+        : '',
+    ]);
+
+    if (techLines.length) {
+      lines.push('', 'Tech:', ...techLines);
+    }
 
     return lines.join('\n');
   }
@@ -1551,7 +1687,18 @@ ${jdText}
   }
 
   function payText(pay) {
-    return pay.range || 'Not found';
+    const range = pay?.range || '';
+    if (!range) return 'Not found';
+
+    const type = enumValue(pay?.type, VALID_PAY_TYPES, 'unknown');
+    if (
+      (type === 'hourly' || type === 'daily') &&
+      inferPayType(range) !== type
+    ) {
+      return `${range} (${type})`;
+    }
+
+    return range;
   }
 
   function hasWorkValue(work) {
@@ -1594,6 +1741,11 @@ ${jdText}
     );
   }
 
+  function remoteWorkStyle() {
+    const color = cleanMetadataText(CONFIG.techMatchColors?.good);
+    return color ? ` style="color: ${escapeHtml(color)}"` : '';
+  }
+
   function techMatchKind(value) {
     if (regexListMatches(CONFIG.badTech, value)) return 'bad';
     if (regexListMatches(CONFIG.goodTech, value)) return 'good';
@@ -1629,13 +1781,18 @@ ${jdText}
       if (!Array.isArray(checks)) continue;
 
       for (const check of checks) {
-        if (!hasFitCriterionData(check)) continue;
+        if (check?.discounted) continue;
+        if (!check?.matches) continue;
+        if (!hasActionableFitConfidence(check.confidence)) continue;
 
         items.push({
           kind,
           check,
           active:
-            verdict === kind && check.matches && check.confidence === 'high',
+            verdict === kind &&
+            check.matches &&
+            check.confidence === 'high' &&
+            !check.discounted,
         });
       }
     }
@@ -1643,13 +1800,14 @@ ${jdText}
     return items;
   }
 
-  function hasFitCriterionData(check) {
-    return Boolean(check?.matches || cleanMetadataText(check?.details));
+  function hasActionableFitConfidence(confidence) {
+    return VALID_CONFIDENCE.has(enumValue(confidence, VALID_FIT_CONFIDENCE, ''));
   }
 
   function resetJobState() {
     state.currentResult = null;
     state.currentJobText = '';
+    state.currentPayEvidence = null;
     state.currentError = null;
     state.jobTitle = '';
     state.assessmentStatus = 'uncertain';
@@ -1671,39 +1829,283 @@ ${jdText}
   }
 
   function normalizeFitChecks(value, prompts) {
-    const criteria = (Array.isArray(prompts) ? prompts : [])
-      .map((item) => cleanMetadataText(item))
-      .filter(Boolean);
+    const criteria = normalizeFitCriteria(prompts);
     const checks = Array.isArray(value) ? value : [];
 
-    return criteria.map((criterion, index) => {
+    return criteria.map((criterionConfig, index) => {
       const matchingCheck =
         checks.find(
           (item) =>
             cleanMetadataText(item?.criterion).toLowerCase() ===
-            criterion.toLowerCase(),
+            criterionConfig.criterion.toLowerCase(),
         ) ||
         checks[index] ||
         {};
 
       return {
-        criterion,
+        criterion: criterionConfig.criterion,
+        ids: criterionConfig.ids,
         matches:
           matchingCheck.matches === true ||
           String(matchingCheck.matches).toLowerCase() === 'true',
         confidence: enumValue(
           matchingCheck.confidence,
-          VALID_CONFIDENCE,
-          'low',
+          VALID_FIT_CONFIDENCE,
+          'inconclusive',
         ),
         details: stringOrEmpty(matchingCheck.details),
       };
     });
   }
 
+  function fitCriterionTexts(value) {
+    return normalizeFitCriteria(value).map((item) => item.criterion);
+  }
+
+  function normalizeFitCriteria(value) {
+    return (Array.isArray(value) ? value : [])
+      .map(normalizeFitCriterion)
+      .filter((item) => item.criterion);
+  }
+
+  function normalizeFitCriterion(value) {
+    if (Array.isArray(value)) {
+      const criterion = cleanMetadataText(value[0]);
+      return {
+        criterion,
+        ids: normalizeFitCriterionIds(value[1], criterion),
+      };
+    }
+
+    if (value && typeof value === 'object') {
+      const criterion = cleanMetadataText(value.criterion || value.text);
+      return {
+        criterion,
+        ids: normalizeFitCriterionIds(value.id || value.ids, criterion),
+      };
+    }
+
+    const criterion = cleanMetadataText(value);
+    return {
+      criterion,
+      ids: normalizeFitCriterionIds(null, criterion),
+    };
+  }
+
+  function normalizeFitCriterionIds(value, criterion) {
+    const explicitIds = []
+      .concat(value || [])
+      .map((item) => cleanMetadataText(item))
+      .filter(Boolean);
+    const ids = explicitIds.length
+      ? explicitIds
+      : inferFitCriterionIds(criterion);
+
+    return normalizeList(ids);
+  }
+
+  function inferFitCriterionIds(criterion) {
+    const text = cleanMetadataText(criterion);
+    const ids = [];
+
+    if (isPayCriterion(text)) ids.push('pay');
+    if (/\b(remote|hybrid|on[-\s]?site|onsite|office)\b/i.test(text)) {
+      ids.push('work-arrangement');
+    }
+
+    return ids;
+  }
+
+  function applyPayEvidenceToResult(result, evidence) {
+    if (!evidence?.range || !result?.pay) return;
+
+    const type = enumValue(evidence.type, VALID_PAY_TYPES, 'unknown');
+    result.pay.range = evidence.range;
+    result.pay.type = type;
+    result.pay.includesSuper = Boolean(evidence.includesSuper);
+    result.pay.isOTE = Boolean(evidence.isOTE);
+    result.pay.confidence = enumValue(
+      evidence.confidence,
+      VALID_CONFIDENCE,
+      type === 'unknown' ? 'medium' : 'high',
+    );
+  }
+
+  function applyPayEvidenceToFitChecks(fitChecks, evidence) {
+    if (!evidence?.range || !evidence?.values) return fitChecks;
+
+    return {
+      bad: applyPayEvidenceToCheckList(fitChecks.bad, evidence, 'bad'),
+      good: applyPayEvidenceToCheckList(fitChecks.good, evidence, 'good'),
+    };
+  }
+
+  function applyPayEvidenceToCheckList(checks, evidence, kind) {
+    if (!Array.isArray(checks)) return [];
+
+    return checks.map((check) => {
+      const evaluation = evaluatePayCriterion(check?.criterion, evidence, kind);
+      return evaluation ? { ...check, ...evaluation } : check;
+    });
+  }
+
+  function resolveFitCheckConflicts(fitChecks) {
+    const byId = new Map();
+
+    for (const kind of ['bad', 'good']) {
+      for (const check of fitChecks[kind] || []) {
+        if (!check?.matches) continue;
+        if (!hasActionableFitConfidence(check.confidence)) continue;
+
+        for (const id of check.ids || []) {
+          if (!byId.has(id)) byId.set(id, { bad: [], good: [] });
+          byId.get(id)[kind].push(check);
+        }
+      }
+    }
+
+    for (const [id, group] of byId) {
+      if (!group.bad.length || !group.good.length) continue;
+
+      markFitConflicts(id, group.bad, group.good);
+      markFitConflicts(id, group.good, group.bad);
+    }
+
+    return fitChecks;
+  }
+
+  function markFitConflicts(id, checks, opposingChecks) {
+    const opposingCriteria = opposingChecks
+      .map((check) => cleanMetadataText(check.criterion))
+      .filter(Boolean)
+      .join(', ');
+
+    for (const check of checks) {
+      check.discounted = true;
+      check.matches = false;
+      check.confidence = 'inconclusive';
+      check.details = opposingCriteria
+        ? `Conflict discounted (${id}): also matched ${opposingCriteria}`
+        : `Conflict discounted (${id})`;
+    }
+  }
+
+  function evaluatePayCriterion(criterion, evidence, kind) {
+    const text = cleanMetadataText(criterion);
+    if (!isPayCriterion(text)) return null;
+
+    const operator = extractPayCriterionOperator(text, kind);
+    const threshold = extractPayCriterionThreshold(text, evidence.type);
+    if (!operator || !Number.isFinite(threshold)) return null;
+
+    const { min, max } = evidence.values;
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+
+    const inclusive = payCriterionIsInclusive(text);
+    const matched =
+      operator === 'lt'
+        ? max < threshold || (inclusive && max <= threshold)
+        : min > threshold || (inclusive && min >= threshold);
+    const partial =
+      operator === 'lt'
+        ? min < threshold || (inclusive && min <= threshold)
+        : max > threshold || (inclusive && max >= threshold);
+    const matches = matched || partial;
+    const confidence = matched || !partial ? 'high' : 'medium';
+
+    return {
+      matches,
+      confidence,
+      details: formatPayCriterionDetails(
+        evidence,
+        operator,
+        threshold,
+        matches,
+        confidence,
+      ),
+    };
+  }
+
+  function isPayCriterion(text) {
+    return /\b(pay|salary|compensation|rate|package|OTE)\b|\$|\/\s*(?:hr|hour|day|yr|year)|\bk\b/i.test(
+      text,
+    );
+  }
+
+  function extractPayCriterionOperator(text, kind) {
+    if (/[<≤]|less than|under|below/i.test(text)) return 'lt';
+    if (/[>≥]|more than|greater than|over|above|at least|\d\s*\+/i.test(text)) {
+      return 'gt';
+    }
+
+    return kind === 'bad' ? 'lt' : 'gt';
+  }
+
+  function extractPayCriterionThreshold(text, type) {
+    const patterns = {
+      hourly: [
+        /(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b)?\s*(\d[\d,]*(?:\.\d+)?)\s*\+?\s*(?:\/|\bper\s*)\s*(?:hr|hour)\b/i,
+        /\b(?:hr|hour|hourly)\b[^\d$]*(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b)?\s*(\d[\d,]*(?:\.\d+)?)/i,
+      ],
+      daily: [
+        /(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b)?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|K)?\s*\+?\s*(?:\/|\bper\s*)\s*(?:day|daily)\b/i,
+        /\b(?:day|daily|day\s*rate)\b[^\d$]*(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b)?\s*(\d[\d,]*(?:\.\d+)?)(?:\s*(k|K))?/i,
+      ],
+      annual: [
+        /(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b)?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|K)\b/i,
+        /(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b)\s*(\d{3,}(?:,\d{3})*(?:\.\d+)?)/i,
+        /\b(\d{3,}(?:,\d{3})*(?:\.\d+)?)\s*(?:\/|\bper\s*)\s*(?:yr|year|annum)\b/i,
+      ],
+    };
+
+    for (const pattern of patterns[type] || []) {
+      const match = text.match(pattern);
+      if (!match) continue;
+
+      const value = parsePayNumber(match[1], match[2]);
+      if (Number.isFinite(value)) return value;
+    }
+
+    return null;
+  }
+
+  function payCriterionIsInclusive(text) {
+    return /[≤≥]|at least|\d\s*\+/i.test(text);
+  }
+
+  function formatPayCriterionDetails(
+    evidence,
+    operator,
+    threshold,
+    matches,
+    confidence,
+  ) {
+    const thresholdText = formatPayThreshold(threshold, evidence.type);
+    const comparison = operator === 'lt' ? 'below' : 'above';
+    const partial = operator === 'lt' ? 'partly falls below' : 'partly reaches';
+    const outcome = matches
+      ? confidence === 'high'
+        ? `is ${comparison}`
+        : partial
+      : `is not ${comparison}`;
+
+    return `Explicit pay is ${evidence.range} (${evidence.type}); ${outcome} ${thresholdText}`;
+  }
+
+  function formatPayThreshold(value, type) {
+    if (type === 'annual') return `$${Math.round(value / 1000)}k annual`;
+    if (type === 'hourly') return `$${formatPayNumber(value)}/hour`;
+    if (type === 'daily') return `$${formatPayNumber(value)}/day`;
+    return `$${formatPayNumber(value)}`;
+  }
+
   function buildAssessment(fitChecks) {
     const badMatch = fitChecks.bad.find(
-      (check) => check.matches && check.confidence === 'high',
+      (check) =>
+        check.matches &&
+        check.confidence === 'high' &&
+        !check.discounted &&
+        hasActionableFitConfidence(check.confidence),
     );
     if (badMatch) {
       return {
@@ -1714,7 +2116,11 @@ ${jdText}
     }
 
     const goodMatch = fitChecks.good.find(
-      (check) => check.matches && check.confidence === 'high',
+      (check) =>
+        check.matches &&
+        check.confidence === 'high' &&
+        !check.discounted &&
+        hasActionableFitConfidence(check.confidence),
     );
     if (goodMatch) {
       return {
@@ -1743,14 +2149,347 @@ ${jdText}
     return `${label} - ${reason}`;
   }
 
-  function composeJobText(metadata, bodyText) {
+  function composeJobText(metadata, bodyText, htmlContext = []) {
     const metadataText = metadata.filter(Boolean).join('\n');
-    return metadataText ? `${metadataText}\n---\n${bodyText}` : bodyText;
+    const htmlText = normalizeList(htmlContext).join('\n');
+    const sections = [];
+
+    if (metadataText) sections.push(metadataText);
+    if (htmlText) sections.push(`[Source HTML]:\n${htmlText}`);
+    if (bodyText) sections.push(bodyText);
+
+    return sections.join('\n---\n');
   }
 
   function addMetadata(lines, label, value) {
     const text = cleanMetadataText(value);
     if (text) lines.push(`[${label}]: ${text}`);
+  }
+
+  function buildLinkedInHtmlContext({
+    detailsRoot,
+    headerRoot,
+    aboutTheJob,
+    body,
+    paySources,
+  }) {
+    const chunks = [];
+    const seen = new Set();
+    const payArea =
+      findSalaryContextElement(headerRoot, paySources) ||
+      findSalaryContextElement(detailsRoot, paySources);
+    const topCard =
+      findLinkedInTopCardElement(detailsRoot, headerRoot, payArea) || payArea;
+    const descriptionRoot = cleanMetadataText(getText(body))
+      ? body
+      : aboutTheJob;
+
+    addHtmlContextChunk(chunks, seen, 'linkedin-top-card', topCard, 1800);
+    addHtmlContextChunk(chunks, seen, 'linkedin-pay-area', payArea, 900);
+    addHtmlContextChunk(
+      chunks,
+      seen,
+      'linkedin-description-html',
+      descriptionRoot,
+      3200,
+    );
+
+    return chunks;
+  }
+
+  function buildSeekHtmlContext(body) {
+    const chunks = [];
+    const seen = new Set();
+
+    addHtmlContextChunk(
+      chunks,
+      seen,
+      'seek-title',
+      firstElement([
+        '[data-automation="job-detail-title"]',
+        '[data-testid="job-detail-title"]',
+        'h1',
+      ]),
+      700,
+    );
+    addHtmlContextChunk(
+      chunks,
+      seen,
+      'seek-salary',
+      firstElement([
+        '[data-automation="job-detail-salary"]',
+        '[data-testid="job-detail-salary"]',
+        '[data-automation*="salary" i]',
+        '[data-testid*="salary" i]',
+      ]),
+      900,
+    );
+    addHtmlContextChunk(
+      chunks,
+      seen,
+      'seek-location-work',
+      findSeekLocationWorkRoot(),
+      1200,
+    );
+    addHtmlContextChunk(chunks, seen, 'seek-description-html', body, 3200);
+
+    return chunks;
+  }
+
+  function findSeekLocationWorkRoot() {
+    const elements = [
+      firstElement([
+        '[data-automation="job-detail-location"]',
+        '[data-testid="job-detail-location"]',
+      ]),
+      firstElement([
+        '[data-automation="job-detail-work-type"]',
+        '[data-testid="job-detail-work-type"]',
+      ]),
+      firstElement([
+        '[data-automation="job-detail-salary"]',
+        '[data-testid="job-detail-salary"]',
+      ]),
+    ].filter(Boolean);
+
+    if (!elements.length) return null;
+
+    return (
+      findCommonAncestor(elements) ||
+      elements[0].closest('section, article, div') ||
+      elements[0]
+    );
+  }
+
+  function findLinkedInTopCardElement(detailsRoot, headerRoot, payArea) {
+    if (!detailsRoot && !headerRoot) return null;
+
+    const headerText = cleanMetadataText(getText(headerRoot));
+    if (headerRoot && headerText.length <= 2500) return headerRoot;
+
+    if (payArea) {
+      return growContextElement(
+        payArea,
+        detailsRoot || document.body,
+        120,
+        1800,
+      );
+    }
+
+    return findBestContextElement(detailsRoot || headerRoot, (text) =>
+      /\b(apply|save|full[-\s]?time|part[-\s]?time|contract|remote|hybrid|on[-\s]?site|onsite)\b/i.test(
+        text,
+      ),
+    );
+  }
+
+  function findSalaryContextElement(root, paySources = []) {
+    if (!root) return null;
+
+    const sources = normalizeList(paySources);
+    const elements = root.querySelectorAll('a, button, span, p, li, div');
+    for (const element of elements) {
+      const text = cleanMetadataText(getText(element));
+      if (!text || text.length > 500) continue;
+
+      const matchesKnownSource = sources.some((source) => text.includes(source));
+      if (!matchesKnownSource && !isSalaryText(text)) continue;
+
+      return growContextElement(element, root, 35, 700);
+    }
+
+    return null;
+  }
+
+  function findBestContextElement(root, predicate) {
+    if (!root) return null;
+
+    let best = null;
+    for (const element of root.querySelectorAll('section, article, header, div')) {
+      const text = cleanMetadataText(getText(element));
+      if (text.length < 40 || text.length > 1800 || !predicate(text)) continue;
+      if (!best || text.length < cleanMetadataText(getText(best)).length) {
+        best = element;
+      }
+    }
+
+    return best;
+  }
+
+  function growContextElement(element, root, minLength, maxLength) {
+    if (!element) return null;
+
+    let candidate = element;
+    let current = element;
+    while (
+      current?.parentElement &&
+      (!root || root.contains(current.parentElement))
+    ) {
+      const parent = current.parentElement;
+      const length = cleanMetadataText(getText(parent)).length;
+      if (length > maxLength) break;
+
+      candidate = parent;
+      if (length >= minLength) current = parent;
+      else current = parent;
+    }
+
+    return candidate;
+  }
+
+  function addHtmlContextChunk(chunks, seen, label, element, maxChars) {
+    if (!element || seen.has(element)) return;
+
+    const html = compactHtml(element, maxChars);
+    if (!html) return;
+
+    seen.add(element);
+    chunks.push(`<${label}>${html}</${label}>`);
+  }
+
+  function compactHtml(element, maxChars = 1800) {
+    const html = serializeCompactNode(element, { length: 0, max: maxChars });
+    return truncateText(html, maxChars);
+  }
+
+  function serializeCompactNode(node, state) {
+    if (!node || state.length >= state.max) return '';
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      return consumeHtmlBudget(normalizeInlineText(node.textContent), state);
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+    const tag = node.tagName.toLowerCase();
+    if (
+      /^(script|style|svg|path|use|img|picture|source|iframe|noscript|template)$/i.test(
+        tag,
+      )
+    ) {
+      return '';
+    }
+
+    const attrs = compactHtmlAttributes(node);
+    if (
+      !cleanMetadataText(node.textContent) &&
+      !/(aria-label|title)=/.test(attrs)
+    ) {
+      return '';
+    }
+
+    const open = `<${tag}${attrs}>`;
+    const close = `</${tag}>`;
+    let html = consumeHtmlBudget(open, state);
+
+    for (const child of node.childNodes) {
+      html += serializeCompactNode(child, state);
+      if (state.length >= state.max) break;
+    }
+
+    html += consumeHtmlBudget(close, state);
+    return html;
+  }
+
+  function compactHtmlAttributes(element) {
+    const attrs = [];
+    for (const attr of element.attributes || []) {
+      const name = attr.name.toLowerCase();
+      const value = cleanMetadataText(attr.value);
+      if (!value || !shouldKeepHtmlAttribute(name, value)) continue;
+
+      attrs.push(
+        `${name}="${escapeAttributeValue(compactAttributeValue(name, value))}"`,
+      );
+    }
+
+    const classes = stableClassNames(element.className);
+    if (classes) attrs.push(`class="${escapeAttributeValue(classes)}"`);
+
+    return attrs.length ? ` ${attrs.join(' ')}` : '';
+  }
+
+  function shouldKeepHtmlAttribute(name, value) {
+    return (
+      /^data-(?:test|testid|automation|sdui|component|component-type)/.test(
+        name,
+      ) ||
+      name === 'role' ||
+      name === 'aria-label' ||
+      name === 'href' ||
+      name === 'title' ||
+      (/^(id|name)$/.test(name) &&
+        /job|salary|pay|location|work|title/i.test(value))
+    );
+  }
+
+  function compactAttributeValue(name, value) {
+    if (name === 'href') {
+      try {
+        const url = new URL(value, location.href);
+        return truncateText(`${url.origin}${url.pathname}`, 180);
+      } catch {
+        return truncateText(value.split(/[?#]/)[0], 180);
+      }
+    }
+
+    return truncateText(value, 180);
+  }
+
+  function stableClassNames(className) {
+    const value =
+      typeof className === 'string' ? className : String(className || '');
+    return value
+      .split(/\s+/)
+      .filter((item) =>
+        /(?:job|jobs|salary|pay|compensation|location|work|description|details|top-card|artdeco-pill)/i.test(
+          item,
+        ),
+      )
+      .slice(0, 6)
+      .join(' ');
+  }
+
+  function consumeHtmlBudget(text, state) {
+    if (!text || state.length >= state.max) return '';
+
+    const remaining = state.max - state.length;
+    const chunk = text.slice(0, remaining);
+    state.length += chunk.length;
+    return chunk;
+  }
+
+  function normalizeInlineText(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function escapeAttributeValue(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function truncateText(value, maxLength) {
+    const text = String(value || '');
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+  }
+
+  function findCommonAncestor(elements) {
+    if (!elements.length) return null;
+
+    let ancestor = elements[0];
+    while (ancestor) {
+      if (elements.every((element) => ancestor.contains(element))) {
+        return ancestor;
+      }
+
+      ancestor = ancestor.parentElement;
+    }
+
+    return null;
   }
 
   function extractWorkplaceType(text) {
@@ -1777,15 +2516,202 @@ ${jdText}
     return stripWorkplaceSuffix(locationLine || '');
   }
 
+  function extractLinkedInPayPills(root) {
+    if (!root) return [];
+
+    const candidates = [];
+    const elements = root.querySelectorAll('a, button, span, p, li, div');
+    for (const element of elements) {
+      const text = cleanMetadataText(getText(element));
+      if (!text || text.length > 240 || !isSalaryText(text)) continue;
+
+      const snippets = extractSalarySnippets(text);
+      candidates.push(...(snippets.length ? snippets : [text]));
+    }
+
+    return normalizeList(candidates).slice(0, 3);
+  }
+
+  function buildPayEvidence(values, source) {
+    const candidates = [];
+    const seen = new Set();
+
+    for (const value of [].concat(values || [])) {
+      const contextType = inferPayType(value);
+      const snippets = extractSalarySnippets(value);
+      const ranges = snippets.length ? snippets : isSalaryText(value) ? [value] : [];
+
+      for (const range of ranges) {
+        const cleanRange = cleanMetadataText(range);
+        const rangeType = inferPayType(cleanRange);
+        const key = cleanRange.toLowerCase();
+        if (!cleanRange || seen.has(key)) continue;
+
+        seen.add(key);
+        candidates.push({
+          range: cleanRange,
+          type: rangeType !== 'unknown' ? rangeType : contextType,
+          contextType,
+        });
+      }
+    }
+    if (!candidates.length) return null;
+
+    const candidate =
+      candidates.find((item) => item.type !== 'unknown') || candidates[0];
+    const range = candidate.range;
+    const type = candidate.type || 'unknown';
+    const parsedValues = parsePayValues(range, type);
+
+    return {
+      range,
+      type,
+      includesSuper: hasSuperText(range),
+      isOTE: hasOteText(range),
+      confidence: type === 'unknown' ? 'medium' : 'high',
+      source: cleanMetadataText(source),
+      values: parsedValues,
+    };
+  }
+
   function extractSalaryLine(text) {
     const lines = cleanMetadataText(text).split('\n');
-    const salaryLine = lines.find(
-      (line) =>
-        /(\$|salary|compensation|base pay|pay range|super)/i.test(line) &&
-        !/salary match/i.test(line),
-    );
+    const salaryLine = lines.find(isSalaryText);
 
-    return salaryLine || '';
+    if (salaryLine) {
+      const snippets = extractSalarySnippets(salaryLine);
+      return snippets[0] || salaryLine;
+    }
+
+    return extractSalarySnippets(text)[0] || '';
+  }
+
+  function extractSalarySnippets(text) {
+    const normalized = cleanMetadataText(text).replace(/\s+/g, ' ');
+    if (!isSalaryText(normalized)) return [];
+
+    const snippets = [];
+    const rangePattern = salaryRangePattern();
+    for (const match of normalized.matchAll(rangePattern)) {
+      if (isSalaryText(match[0])) snippets.push(match[0]);
+    }
+
+    if (!snippets.length) {
+      const singlePattern = salarySinglePattern();
+      for (const match of normalized.matchAll(singlePattern)) {
+        if (isSalaryText(match[0])) snippets.push(match[0]);
+      }
+    }
+
+    return normalizeList(snippets);
+  }
+
+  function isSalaryText(text) {
+    const value = cleanMetadataText(text);
+    if (!value || /salary match/i.test(value)) return false;
+
+    return (
+      /(?:\d|\$)/.test(value) &&
+      /(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b|\b(?:salary|compensation|base pay|pay range|remuneration|package|OTE|super|hourly|daily|day rate)\b|\bper\s+(?:hour|hr|day|annum|year)\b|\d[\d,.]*\s*k\b.*\b(?:p\.?a\.?|per\s+(?:annum|year)|annum|year|yr)\b|\d[\d,.]*\s*(?:AUD|NZD|USD|GBP|EUR)?\s*\/\s*(?:hr|hour|day|yr|year)\b)/i.test(
+        value,
+      )
+    );
+  }
+
+  function inferPayType(text) {
+    const value = cleanMetadataText(text);
+    if (!value) return 'unknown';
+
+    if (
+      /\b(hourly|hr|hours?)\b|\/\s*(?:h|hr|hour)\b|\bper\s+(?:h|hr|hour)\b/i.test(
+        value,
+      )
+    ) {
+      return 'hourly';
+    }
+
+    if (
+      /\b(day\s*rate|daily|days?)\b|\/\s*(?:d|day)\b|\bper\s+(?:d|day)\b/i.test(
+        value,
+      )
+    ) {
+      return 'daily';
+    }
+
+    if (
+      /\b(annual|annually|annum|yearly|years?|salary|base pay|base salary|package|remuneration)\b|\/\s*(?:yr|year)\b|p\.?a\.?/i.test(
+        value,
+      ) ||
+      /\b\d[\d,.]*\s*k\b/i.test(value) ||
+      /(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b)\s*\d{3,}(?:,\d{3})/i.test(value)
+    ) {
+      return 'annual';
+    }
+
+    return 'unknown';
+  }
+
+  function parsePayValues(text, type) {
+    const values = [];
+    const pattern =
+      /(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b)?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|K)?/g;
+
+    for (const match of cleanMetadataText(text).matchAll(pattern)) {
+      const value = parsePayNumber(match[1], match[2]);
+      if (!Number.isFinite(value)) continue;
+
+      if (type === 'annual' && !match[2] && value < 1000) continue;
+      values.push(value);
+    }
+
+    if (!values.length) return null;
+
+    return {
+      min: Math.min(...values),
+      max: Math.max(...values),
+    };
+  }
+
+  function parsePayNumber(value, suffix = '') {
+    const number = Number.parseFloat(String(value || '').replace(/,/g, ''));
+    if (!Number.isFinite(number)) return null;
+    return /k/i.test(suffix) ? number * 1000 : number;
+  }
+
+  function hasSuperText(text) {
+    return /\bsuper(?:annuation)?\b|\+\s*super|plus\s+super|incl(?:udes|uding)?\s+super/i.test(
+      cleanMetadataText(text),
+    );
+  }
+
+  function hasOteText(text) {
+    return /\bOTE\b|on[-\s]?target earnings/i.test(cleanMetadataText(text));
+  }
+
+  function formatPayNumber(value) {
+    return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  }
+
+  function salaryAmountPattern() {
+    const currency = String.raw`(?:A?\$|\b(?:AUD|NZD|USD|GBP|EUR)\b)`;
+    const unit = String.raw`(?:(?:\/|\bper\s+)\s*(?:yr|year|annum|hr|hour|day)|p\.?a\.?\b|\b(?:annum|year|yr|hourly|hour|daily|day)\b)`;
+    return String.raw`(?:${currency}\s*)?\d[\d,]*(?:\.\d+)?\s*(?:k|K)?(?:\s*\+(?=\s*(?:${currency}|${unit})))?(?:\s*${currency})?(?:\s*${unit})?`;
+  }
+
+  function salaryRangePattern() {
+    const amount = salaryAmountPattern();
+    return new RegExp(
+      String.raw`${amount}\s*(?:-|–|—|\bto\b|\band\b)\s*${amount}(?:\s*(?:\+\s*super|plus\s+super|incl(?:udes|uding)?\s+super|package|OTE))?`,
+      'gi',
+    );
+  }
+
+  function salarySinglePattern() {
+    const amount = salaryAmountPattern();
+    return new RegExp(
+      String.raw`${amount}(?:\s*(?:\+\s*super|plus\s+super|incl(?:udes|uding)?\s+super|package|OTE))?`,
+      'gi',
+    );
   }
 
   function extractLinkedInDetails(text) {
@@ -2007,6 +2933,12 @@ ${jdText}
     }
 
     return result;
+  }
+
+  function compactTextLines(lines) {
+    return (Array.isArray(lines) ? lines : []).filter((line) =>
+      Boolean(cleanMetadataText(line)),
+    );
   }
 
   function safeParseJson(value) {
