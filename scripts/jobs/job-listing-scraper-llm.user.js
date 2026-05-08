@@ -32,8 +32,14 @@
     ollamaUrl: 'http://localhost:11434',
     timeout: 15000,
     numPredict: 1024,
-    good: ['pay > 160k or $100+/hour', 'fully remote'],
-    bad: ['hybrid > 3 days in office', 'on-site role', 'backend-focused', '.NET requirement'],
+    good: ['pay > 165k or $110+/hour', 'fully remote'],
+    bad: [
+      'pay < 160k or $100/hour',
+      'hybrid >= 3 days in office',
+      'on-site role',
+      '.NET, Java, C#, C++ required',
+      'hybrid but not based in Sydney/NSW',
+    ],
     statusIcons: {
       good: '✓',
       bad: '✕',
@@ -262,7 +268,7 @@
         padding-left: 12px;
         color: #f9fafb;
         text-align: right;
-        background: linear-gradient(90deg, rgba(17, 24, 39, 0), rgba(17, 24, 39, 0.94) 38%);
+        background: linear-gradient(90deg, rgba(17, 24, 39, 0), rgb(30 37 51) 38%);
       }
 
       #${PANEL_ID} .job-scraper-llm__tech-line--expanded {
@@ -416,7 +422,11 @@
       if (Math.abs(dx) + Math.abs(dy) > 4) dragStart.moved = true;
 
       const rect = panel.getBoundingClientRect();
-      const left = clamp(dragStart.left + dx, 8, window.innerWidth - rect.width - 8);
+      const left = clamp(
+        dragStart.left + dx,
+        8,
+        window.innerWidth - rect.width - 8,
+      );
       const top = clamp(dragStart.top + dy, 8, window.innerHeight - 42);
 
       panel.style.left = `${left}px`;
@@ -447,7 +457,9 @@
     });
 
     panel.addEventListener('click', (event) => {
-      const techLine = event.target.closest('.job-scraper-llm__tech-line--overflow');
+      const techLine = event.target.closest(
+        '.job-scraper-llm__tech-line--overflow',
+      );
       if (!techLine || !panel.contains(techLine)) return;
 
       toggleTechLine(techLine);
@@ -456,7 +468,9 @@
     panel.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
 
-      const techLine = event.target.closest('.job-scraper-llm__tech-line--overflow');
+      const techLine = event.target.closest(
+        '.job-scraper-llm__tech-line--overflow',
+      );
       if (!techLine || !panel.contains(techLine)) return;
 
       event.preventDefault();
@@ -488,8 +502,13 @@
       return;
     }
 
-    const status = enumValue(state.assessmentStatus, VALID_ASSESSMENT, 'uncertain');
-    const icon = CONFIG.statusIcons?.[status] || CONFIG.statusIcons?.uncertain || '';
+    const status = enumValue(
+      state.assessmentStatus,
+      VALID_ASSESSMENT,
+      'uncertain',
+    );
+    const icon =
+      CONFIG.statusIcons?.[status] || CONFIG.statusIcons?.uncertain || '';
     state.titleElement.innerHTML = `${icon ? `<span class="job-scraper-llm__status-icon">${escapeHtml(icon)}</span>` : ''}${escapeHtml(title)}`;
     state.titleElement.title = formatAssessmentTitle(state.assessment);
     state.titleElement.style.color = statusColor(status);
@@ -501,7 +520,10 @@
     const rect = state.panel.getBoundingClientRect();
     GM_setValue(
       PANEL_POSITION_KEY,
-      JSON.stringify({ left: Math.round(rect.left), top: Math.round(rect.top) })
+      JSON.stringify({
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+      }),
     );
   }
 
@@ -581,8 +603,13 @@
     let lastExtraction = null;
 
     while (Date.now() < deadline) {
-      lastExtraction = state.site === 'linkedin' ? extractLinkedIn() : extractSeek();
-      if (lastExtraction && lastExtraction.text && lastExtraction.bodyText.length >= 80) {
+      lastExtraction =
+        state.site === 'linkedin' ? extractLinkedIn() : extractSeek();
+      if (
+        lastExtraction &&
+        lastExtraction.text &&
+        lastExtraction.bodyText.length >= 80
+      ) {
         return lastExtraction;
       }
 
@@ -637,9 +664,15 @@
     const bodyText = cleanDescriptionText(getText(body));
     if (!bodyText) return null;
 
-    const locationText = cleanMetadataText(getText('[data-automation="job-detail-location"]'));
-    const workType = cleanMetadataText(getText('[data-automation="job-detail-work-type"]'));
-    const salary = cleanMetadataText(getText('[data-automation="job-detail-salary"]'));
+    const locationText = cleanMetadataText(
+      getText('[data-automation="job-detail-location"]'),
+    );
+    const workType = cleanMetadataText(
+      getText('[data-automation="job-detail-work-type"]'),
+    );
+    const salary = cleanMetadataText(
+      getText('[data-automation="job-detail-salary"]'),
+    );
     const title = extractSeekTitle();
     const metadata = [];
 
@@ -677,7 +710,8 @@
 
       const expanded =
         !moreControl ||
-        (attempts > 0 && (bodyText.length >= preClickLength + 80 || bodyText.length >= 1500));
+        (attempts > 0 &&
+          (bodyText.length >= preClickLength + 80 || bodyText.length >= 1500));
       const gaveUpWithContent = attempts >= 3 && bodyText.length >= 80;
       if (bodyText.length >= 80 && (expanded || gaveUpWithContent)) {
         return;
@@ -690,7 +724,7 @@
   function getLinkedInDescriptionRoot() {
     return (
       document.querySelector(
-        '[data-sdui-component="com.linkedin.sdui.generated.jobseeker.dsl.impl.aboutTheJob"]'
+        '[data-sdui-component="com.linkedin.sdui.generated.jobseeker.dsl.impl.aboutTheJob"]',
       ) ||
       firstElement([
         '.jobs-description__content',
@@ -717,12 +751,15 @@
     if (!root) return null;
 
     const controls = root.querySelectorAll(
-      '[data-testid="expandable-text-button"], button, [role="button"], a'
+      '[data-testid="expandable-text-button"], button, [role="button"], a',
     );
 
     for (const control of controls) {
       const label = cleanMetadataText(
-        control.innerText || control.textContent || control.getAttribute('aria-label') || ''
+        control.innerText ||
+          control.textContent ||
+          control.getAttribute('aria-label') ||
+          '',
       );
       if (isMoreDescriptionLabel(label)) return control;
     }
@@ -733,11 +770,15 @@
   function isMoreDescriptionLabel(label) {
     const text = cleanMetadataText(label);
     if (!text || /jobs like this|more jobs/i.test(text)) return false;
-    return /^(show|see|read)\s+more\b/i.test(text) || /(^|\s)(…|\.\.\.)?\s*more$/i.test(text);
+    return (
+      /^(show|see|read)\s+more\b/i.test(text) ||
+      /(^|\s)(…|\.\.\.)?\s*more$/i.test(text)
+    );
   }
 
   function clickExpandableControl(control) {
-    const clickable = control.querySelector('[style*="pointer-events: auto"]') || control;
+    const clickable =
+      control.querySelector('[style*="pointer-events: auto"]') || control;
     safeClick(clickable);
     if (clickable !== control) safeClick(control);
   }
@@ -807,25 +848,47 @@
         onload: (res) => {
           try {
             if (res.status < 200 || res.status >= 300) {
-              reject(userError('offline', `Ollama returned HTTP ${res.status}`));
+              reject(
+                userError('offline', `Ollama returned HTTP ${res.status}`),
+              );
               return;
             }
 
             const data = JSON.parse(res.responseText);
-            resolve(typeof data.response === 'string' ? data.response : JSON.stringify(data.response));
+            resolve(
+              typeof data.response === 'string'
+                ? data.response
+                : JSON.stringify(data.response),
+            );
           } catch (error) {
-            reject(userError('parse', 'Could not parse Ollama response', res.responseText, error));
+            reject(
+              userError(
+                'parse',
+                'Could not parse Ollama response',
+                res.responseText,
+                error,
+              ),
+            );
           }
         },
-        onerror: () => reject(userError('offline', 'LLM offline - is Ollama running?')),
+        onerror: () =>
+          reject(userError('offline', 'LLM offline - is Ollama running?')),
         ontimeout: () => reject(userError('offline', 'LLM timeout')),
       });
     });
   }
 
   function buildPrompt(jdText) {
-    const badCriteria = JSON.stringify(Array.isArray(CONFIG.bad) ? CONFIG.bad : [], null, 2);
-    const goodCriteria = JSON.stringify(Array.isArray(CONFIG.good) ? CONFIG.good : [], null, 2);
+    const badCriteria = JSON.stringify(
+      Array.isArray(CONFIG.bad) ? CONFIG.bad : [],
+      null,
+      2,
+    );
+    const goodCriteria = JSON.stringify(
+      Array.isArray(CONFIG.good) ? CONFIG.good : [],
+      null,
+      2,
+    );
 
     return `You are a job listing data extractor. Analyse the following job description and return a JSON object with exactly this shape:
 
@@ -919,7 +982,11 @@ ${jdText}
 
   function validateResult(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
-      throw userError('shape', 'Model returned a non-object JSON value', JSON.stringify(input));
+      throw userError(
+        'shape',
+        'Model returned a non-object JSON value',
+        JSON.stringify(input),
+      );
     }
 
     const work = input.workArrangement || {};
@@ -951,20 +1018,31 @@ ${jdText}
           []
             .concat(Array.isArray(tech.optional) ? tech.optional : [])
             .concat(Array.isArray(tech.preferred) ? tech.preferred : [])
-            .concat(Array.isArray(tech.mentioned) ? tech.mentioned : [])
+            .concat(Array.isArray(tech.mentioned) ? tech.mentioned : []),
         ),
       },
       fitChecks,
       assessment,
     };
 
-    if (!input.workArrangement || !input.pay || !input.techStack || !input.fitChecks) {
-      throw userError('shape', 'Model JSON missing required top-level fields', JSON.stringify(input, null, 2));
+    if (
+      !input.workArrangement ||
+      !input.pay ||
+      !input.techStack ||
+      !input.fitChecks
+    ) {
+      throw userError(
+        'shape',
+        'Model JSON missing required top-level fields',
+        JSON.stringify(input, null, 2),
+      );
     }
 
-    const requiredKeys = new Set(result.techStack.required.map((item) => item.toLowerCase()));
+    const requiredKeys = new Set(
+      result.techStack.required.map((item) => item.toLowerCase()),
+    );
     result.techStack.optional = result.techStack.optional.filter(
-      (item) => !requiredKeys.has(item.toLowerCase())
+      (item) => !requiredKeys.has(item.toLowerCase()),
     );
 
     return result;
@@ -1046,7 +1124,8 @@ ${jdText}
     const icon = CONFIG.statusIcons?.[item.kind] || '';
     const color = statusColor(item.kind);
     const style = color ? ` style="color: ${escapeHtml(color)}"` : '';
-    const textStyle = item.active && color ? ` style="color: ${escapeHtml(color)}"` : '';
+    const textStyle =
+      item.active && color ? ` style="color: ${escapeHtml(color)}"` : '';
 
     return `
       <span class="job-scraper-llm__fit-item">
@@ -1061,7 +1140,10 @@ ${jdText}
     if (!state.content) return;
 
     for (const line of state.content.querySelectorAll('[data-tech-line]')) {
-      line.classList.remove('job-scraper-llm__tech-line--overflow', 'job-scraper-llm__tech-line--expanded');
+      line.classList.remove(
+        'job-scraper-llm__tech-line--overflow',
+        'job-scraper-llm__tech-line--expanded',
+      );
       line.removeAttribute('role');
       line.removeAttribute('tabindex');
       line.removeAttribute('aria-expanded');
@@ -1078,9 +1160,14 @@ ${jdText}
   }
 
   function toggleTechLine(line) {
-    const expanded = line.classList.toggle('job-scraper-llm__tech-line--expanded');
+    const expanded = line.classList.toggle(
+      'job-scraper-llm__tech-line--expanded',
+    );
     line.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    line.setAttribute('title', expanded ? 'Click to collapse' : 'Click to expand');
+    line.setAttribute(
+      'title',
+      expanded ? 'Click to collapse' : 'Click to expand',
+    );
   }
 
   function renderWorkValue(work) {
@@ -1167,11 +1254,17 @@ ${jdText}
 
   function confidenceColor(confidence) {
     const key = enumValue(confidence, VALID_CONFIDENCE, '');
-    return cleanMetadataText(CONFIG.confidenceColors?.[key] || CONFIG.confidenceColor);
+    return cleanMetadataText(
+      CONFIG.confidenceColors?.[key] || CONFIG.confidenceColor,
+    );
   }
 
   function collectFitCriteria(result) {
-    const verdict = enumValue(result.assessment?.status, VALID_ASSESSMENT, 'uncertain');
+    const verdict = enumValue(
+      result.assessment?.status,
+      VALID_ASSESSMENT,
+      'uncertain',
+    );
     const items = [];
 
     for (const kind of ['bad', 'good']) {
@@ -1184,7 +1277,8 @@ ${jdText}
         items.push({
           kind,
           check,
-          active: verdict === kind && check.matches && check.confidence === 'high',
+          active:
+            verdict === kind && check.matches && check.confidence === 'high',
         });
       }
     }
@@ -1208,9 +1302,14 @@ ${jdText}
   }
 
   function applyResultState(result) {
-    state.jobTitle = cleanJobTitle(state.jobTitle) || cleanJobTitle(result.jobTitle);
+    state.jobTitle =
+      cleanJobTitle(state.jobTitle) || cleanJobTitle(result.jobTitle);
     state.assessment = result.assessment || null;
-    state.assessmentStatus = enumValue(state.assessment?.status, VALID_ASSESSMENT, 'uncertain');
+    state.assessmentStatus = enumValue(
+      state.assessment?.status,
+      VALID_ASSESSMENT,
+      'uncertain',
+    );
     renderPanelTitle();
   }
 
@@ -1222,21 +1321,33 @@ ${jdText}
 
     return criteria.map((criterion, index) => {
       const matchingCheck =
-        checks.find((item) => cleanMetadataText(item?.criterion).toLowerCase() === criterion.toLowerCase()) ||
+        checks.find(
+          (item) =>
+            cleanMetadataText(item?.criterion).toLowerCase() ===
+            criterion.toLowerCase(),
+        ) ||
         checks[index] ||
         {};
 
       return {
         criterion,
-        matches: matchingCheck.matches === true || String(matchingCheck.matches).toLowerCase() === 'true',
-        confidence: enumValue(matchingCheck.confidence, VALID_CONFIDENCE, 'low'),
+        matches:
+          matchingCheck.matches === true ||
+          String(matchingCheck.matches).toLowerCase() === 'true',
+        confidence: enumValue(
+          matchingCheck.confidence,
+          VALID_CONFIDENCE,
+          'low',
+        ),
         details: stringOrEmpty(matchingCheck.details),
       };
     });
   }
 
   function buildAssessment(fitChecks) {
-    const badMatch = fitChecks.bad.find((check) => check.matches && check.confidence === 'high');
+    const badMatch = fitChecks.bad.find(
+      (check) => check.matches && check.confidence === 'high',
+    );
     if (badMatch) {
       return {
         status: 'bad',
@@ -1245,7 +1356,9 @@ ${jdText}
       };
     }
 
-    const goodMatch = fitChecks.good.find((check) => check.matches && check.confidence === 'high');
+    const goodMatch = fitChecks.good.find(
+      (check) => check.matches && check.confidence === 'high',
+    );
     if (goodMatch) {
       return {
         status: 'good',
@@ -1266,7 +1379,10 @@ ${jdText}
 
     const status = enumValue(assessment.status, VALID_ASSESSMENT, 'uncertain');
     const label = status.charAt(0).toUpperCase() + status.slice(1);
-    const reason = assessment.match?.criterion || assessment.reason || 'No high-confidence preference match';
+    const reason =
+      assessment.match?.criterion ||
+      assessment.reason ||
+      'No high-confidence preference match';
     return `${label} - ${reason}`;
   }
 
@@ -1281,7 +1397,9 @@ ${jdText}
   }
 
   function extractWorkplaceType(text) {
-    const match = String(text || '').match(/\b(remote|hybrid|on[-\s]?site|onsite)\b/i);
+    const match = String(text || '').match(
+      /\b(remote|hybrid|on[-\s]?site|onsite)\b/i,
+    );
     if (!match) return '';
 
     const raw = match[1].toLowerCase().replace(/\s+/g, '-');
@@ -1291,9 +1409,12 @@ ${jdText}
 
   function extractLinkedInLocation(text) {
     const lines = cleanMetadataText(text).split('\n');
-    const locationLine = lines.find((line) =>
-      /\b(remote|hybrid|on[-\s]?site|onsite)\b/i.test(line) &&
-      /\b(area|australia|nsw|vic|qld|sa|wa|tas|act|nt|sydney|melbourne|brisbane|perth|adelaide|canberra)\b/i.test(line)
+    const locationLine = lines.find(
+      (line) =>
+        /\b(remote|hybrid|on[-\s]?site|onsite)\b/i.test(line) &&
+        /\b(area|australia|nsw|vic|qld|sa|wa|tas|act|nt|sydney|melbourne|brisbane|perth|adelaide|canberra)\b/i.test(
+          line,
+        ),
     );
 
     return stripWorkplaceSuffix(locationLine || '');
@@ -1301,9 +1422,10 @@ ${jdText}
 
   function extractSalaryLine(text) {
     const lines = cleanMetadataText(text).split('\n');
-    const salaryLine = lines.find((line) =>
-      /(\$|salary|compensation|base pay|pay range|super)/i.test(line) &&
-      !/salary match/i.test(line)
+    const salaryLine = lines.find(
+      (line) =>
+        /(\$|salary|compensation|base pay|pay range|super)/i.test(line) &&
+        !/salary match/i.test(line),
     );
 
     return salaryLine || '';
@@ -1313,7 +1435,9 @@ ${jdText}
     const candidates = cleanMetadataText(text)
       .split('\n')
       .filter((line) =>
-        /\b(full[-\s]?time|part[-\s]?time|contract|temporary|internship|entry level|associate|mid[-\s]?senior|director|executive)\b/i.test(line)
+        /\b(full[-\s]?time|part[-\s]?time|contract|temporary|internship|entry level|associate|mid[-\s]?senior|director|executive)\b/i.test(
+          line,
+        ),
       )
       .slice(0, 4);
 
@@ -1334,7 +1458,9 @@ ${jdText}
 
     for (const candidateRoot of roots) {
       for (const selector of selectors) {
-        const title = cleanJobTitle(getText(candidateRoot?.querySelector(selector)));
+        const title = cleanJobTitle(
+          getText(candidateRoot?.querySelector(selector)),
+        );
         if (title) return title;
       }
     }
@@ -1360,7 +1486,9 @@ ${jdText}
 
   function extractSeekDataLayerTitle() {
     for (const script of document.querySelectorAll('script')) {
-      const match = String(script.textContent || '').match(/"jobTitle"\s*:\s*"((?:\\.|[^"\\])*)"/);
+      const match = String(script.textContent || '').match(
+        /"jobTitle"\s*:\s*"((?:\\.|[^"\\])*)"/,
+      );
       if (!match) continue;
 
       try {
@@ -1386,14 +1514,18 @@ ${jdText}
     return cleanJobTitle(
       title
         .replace(/\s+Job\s+in\s+.+?\s+-\s+SEEK$/i, '')
-        .replace(/\s+[|_-]\s+SEEK$/i, '')
+        .replace(/\s+[|_-]\s+SEEK$/i, ''),
     );
   }
 
   function cleanJobTitle(value) {
     const title = cleanPageCountPrefix(cleanMetadataText(value));
     if (!title || title.length > 140) return '';
-    if (/\b(job search|jobs?\s+in|jobs?\s*$|linkedin|seek|sign in|open app)\b/i.test(title)) {
+    if (
+      /\b(job search|jobs?\s+in|jobs?\s*$|linkedin|seek|sign in|open app)\b/i.test(
+        title,
+      )
+    ) {
       return '';
     }
     return title;
@@ -1404,7 +1536,10 @@ ${jdText}
   }
 
   function stripWorkplaceSuffix(text) {
-    return cleanMetadataText(text).replace(/\s*\((Remote|Hybrid|On[-\s]?site|Onsite)\)\s*$/i, '');
+    return cleanMetadataText(text).replace(
+      /\s*\((Remote|Hybrid|On[-\s]?site|Onsite)\)\s*$/i,
+      '',
+    );
   }
 
   function textBeforeNeedle(text, needle) {
@@ -1429,7 +1564,8 @@ ${jdText}
   }
 
   function getText(input) {
-    const element = typeof input === 'string' ? document.querySelector(input) : input;
+    const element =
+      typeof input === 'string' ? document.querySelector(input) : input;
     if (!element) return '';
     return element.innerText || element.textContent || '';
   }
@@ -1534,7 +1670,12 @@ ${jdText}
 
   function toUserError(error) {
     if (error?.code === 'offline') {
-      return userError('offline', 'LLM offline - is Ollama running?', error.raw || '', error);
+      return userError(
+        'offline',
+        'LLM offline - is Ollama running?',
+        error.raw || '',
+        error,
+      );
     }
 
     if (error?.code === 'parse' || error?.code === 'shape') {
@@ -1542,10 +1683,20 @@ ${jdText}
     }
 
     if (error?.code === 'not_found') {
-      return userError('not_found', 'Could not find job description', error.raw || '', error);
+      return userError(
+        'not_found',
+        'Could not find job description',
+        error.raw || '',
+        error,
+      );
     }
 
-    return userError('unknown', error?.message || 'Unexpected error', error?.raw || '', error);
+    return userError(
+      'unknown',
+      error?.message || 'Unexpected error',
+      error?.raw || '',
+      error,
+    );
   }
 
   function delay(ms) {
