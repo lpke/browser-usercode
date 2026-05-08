@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Job listing scraper (LLM)
 // @namespace    local
-// @version      1.0.2
+// @version      1.0.4
 // @description  Summarise LinkedIn and SEEK job listings with a local Ollama model.
 // @match        https://www.linkedin.com/jobs/view/*
 // @match        https://www.linkedin.com/jobs/search/*
@@ -49,7 +49,7 @@
       medium: '▅',
       high: '█',
     },
-    confidenceColor: '#cbd5e1',
+    confidenceColor: '#666b71',
   };
 
   const PANEL_ID = 'job-scraper-llm-panel';
@@ -221,9 +221,23 @@
         color: #cbd5e1;
       }
 
+      #${PANEL_ID} .job-scraper-llm__status-icon {
+        display: inline-block;
+        padding-right: 8px;
+      }
+
       #${PANEL_ID} .job-scraper-llm__confidence {
         display: inline-block;
         margin-left: 5px;
+        font-size: 0.5em;
+        font-weight: 700;
+        line-height: 1;
+        vertical-align: 0.15em;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__fit-symbol {
+        display: inline-block;
+        padding-right: 6px;
         font-weight: 700;
       }
 
@@ -284,8 +298,8 @@
       <div class="job-scraper-llm__header" title="Drag to move. Click title to collapse.">
         <div class="job-scraper-llm__title">Job Scraper</div>
         <div class="job-scraper-llm__controls">
-          <button class="job-scraper-llm__button" type="button" data-action="copy" title="Copy summary">Copy</button>
-          <button class="job-scraper-llm__button" type="button" data-action="retry" title="Retry analysis">Retry</button>
+          <button class="job-scraper-llm__button" type="button" data-action="copy" title="Copy summary" aria-label="Copy summary">⎘</button>
+          <button class="job-scraper-llm__button" type="button" data-action="retry" title="Retry analysis" aria-label="Retry analysis">⟳</button>
         </div>
       </div>
       <div class="job-scraper-llm__body"></div>
@@ -402,7 +416,7 @@
 
     const status = enumValue(state.assessmentStatus, VALID_ASSESSMENT, 'uncertain');
     const icon = CONFIG.statusIcons?.[status] || CONFIG.statusIcons?.uncertain || '';
-    state.titleElement.textContent = `${icon ? `${icon} ` : ''}${title}`;
+    state.titleElement.innerHTML = `${icon ? `<span class="job-scraper-llm__status-icon">${escapeHtml(icon)}</span>` : ''}${escapeHtml(title)}`;
     state.titleElement.title = formatAssessmentTitle(state.assessment);
     state.titleElement.style.color = statusColor(status);
   }
@@ -443,7 +457,11 @@
 
     try {
       await delay(350);
-      expandJobDescription();
+      if (state.site === 'linkedin') {
+        renderLoading('Expanding description...');
+        await ensureLinkedInDescriptionExpanded();
+        renderLoading('Analysing...');
+      }
 
       const extraction = await waitForExtraction();
       if (!extraction || !extraction.text) {
@@ -501,20 +519,8 @@
   }
 
   function extractLinkedIn() {
-    const aboutTheJob = document.querySelector(
-      '[data-sdui-component="com.linkedin.sdui.generated.jobseeker.dsl.impl.aboutTheJob"]'
-    );
-    const body =
-      aboutTheJob?.querySelector('[data-testid="expandable-text-box"]') ||
-      firstElement([
-        '.jobs-description__content .jobs-box__html-content',
-        '.jobs-description__content .show-more-less-html__markup',
-        '.jobs-description-content__text',
-        '.jobs-box__html-content',
-        '.show-more-less-html__markup',
-        '.description__text',
-        '#job-details',
-      ]);
+    const aboutTheJob = getLinkedInDescriptionRoot();
+    const body = getLinkedInDescriptionBody(aboutTheJob);
 
     const bodyText = cleanDescriptionText(getText(body || aboutTheJob));
     if (!bodyText) return null;
@@ -576,27 +582,90 @@
     };
   }
 
-  function expandJobDescription() {
-    const roots =
-      state.site === 'linkedin'
-        ? [
-            document.querySelector(
-              '[data-sdui-component="com.linkedin.sdui.generated.jobseeker.dsl.impl.aboutTheJob"]'
-            ),
-            document.querySelector('.jobs-description__content'),
-          ]
-        : [document.querySelector('[data-automation="jobAdDetails"]')];
+  async function ensureLinkedInDescriptionExpanded() {
+    const deadline = Date.now() + 6000;
+    let attempts = 0;
+    let preClickLength = 0;
 
-    for (const root of roots) {
-      if (!root) continue;
+    while (Date.now() < deadline) {
+      const root = getLinkedInDescriptionRoot();
+      const body = getLinkedInDescriptionBody(root);
+      const bodyText = cleanDescriptionText(getText(body || root));
+      const moreControl = findLinkedInDescriptionMoreControl(root);
 
-      for (const button of root.querySelectorAll('button, [role="button"]')) {
-        const label = cleanMetadataText(button.innerText || button.getAttribute('aria-label') || '');
-        if (/^(show|see|read)\s+more\b|more$/i.test(label)) {
-          safeClick(button);
-        }
+      if (moreControl && attempts < 3) {
+        preClickLength = Math.max(preClickLength, bodyText.length);
+        attempts += 1;
+        clickExpandableControl(moreControl);
+        await delay(450);
+        continue;
       }
+
+      const expanded =
+        !moreControl ||
+        (attempts > 0 && (bodyText.length >= preClickLength + 80 || bodyText.length >= 1500));
+      const gaveUpWithContent = attempts >= 3 && bodyText.length >= 80;
+      if (bodyText.length >= 80 && (expanded || gaveUpWithContent)) {
+        return;
+      }
+
+      await delay(250);
     }
+  }
+
+  function getLinkedInDescriptionRoot() {
+    return (
+      document.querySelector(
+        '[data-sdui-component="com.linkedin.sdui.generated.jobseeker.dsl.impl.aboutTheJob"]'
+      ) ||
+      firstElement([
+        '.jobs-description__content',
+        '.jobs-description-content__text',
+        '#job-details',
+      ])
+    );
+  }
+
+  function getLinkedInDescriptionBody(root) {
+    return (
+      root?.querySelector('[data-testid="expandable-text-box"]') ||
+      firstElementFrom(root || document, [
+        '.jobs-box__html-content',
+        '.show-more-less-html__markup',
+        '.jobs-description-content__text',
+        '.description__text',
+        '#job-details',
+      ])
+    );
+  }
+
+  function findLinkedInDescriptionMoreControl(root) {
+    if (!root) return null;
+
+    const controls = root.querySelectorAll(
+      '[data-testid="expandable-text-button"], button, [role="button"], a'
+    );
+
+    for (const control of controls) {
+      const label = cleanMetadataText(
+        control.innerText || control.textContent || control.getAttribute('aria-label') || ''
+      );
+      if (isMoreDescriptionLabel(label)) return control;
+    }
+
+    return null;
+  }
+
+  function isMoreDescriptionLabel(label) {
+    const text = cleanMetadataText(label);
+    if (!text || /jobs like this|more jobs/i.test(text)) return false;
+    return /^(show|see|read)\s+more\b/i.test(text) || /(^|\s)(…|\.\.\.)?\s*more$/i.test(text);
+  }
+
+  function clickExpandableControl(control) {
+    const clickable = control.querySelector('[style*="pointer-events: auto"]') || control;
+    safeClick(clickable);
+    if (clickable !== control) safeClick(control);
   }
 
   function installUrlWatcher() {
@@ -852,11 +921,9 @@ ${jdText}
         ${renderPayValue(pay)}
       </div>
       <div class="job-scraper-llm__divider"></div>
-      <div class="job-scraper-llm__line">
-        <span class="job-scraper-llm__label">Tech</span>
-      </div>
       ${renderTechLine('Required', result.techStack.required)}
       ${renderTechLine('Optional', result.techStack.optional)}
+      ${renderFitTriggers(result)}
     `;
   }
 
@@ -883,6 +950,32 @@ ${jdText}
       <div class="job-scraper-llm__line">
         <span class="job-scraper-llm__label">${escapeHtml(label)}:</span>
         ${escapeHtml(values.length ? values.join(', ') : 'None found')}
+      </div>
+    `;
+  }
+
+  function renderFitTriggers(result) {
+    const status = enumValue(result.assessment?.status, VALID_ASSESSMENT, 'uncertain');
+    if (status === 'uncertain') return '';
+
+    const checks = triggeredFitChecks(result, status);
+    if (!checks.length) return '';
+
+    return `
+      <div class="job-scraper-llm__divider"></div>
+      ${checks.map((check) => renderFitTriggerLine(status, check)).join('')}
+    `;
+  }
+
+  function renderFitTriggerLine(status, check) {
+    const icon = CONFIG.statusIcons?.[status] || '';
+    const color = statusColor(status);
+    const style = color ? ` style="color: ${escapeHtml(color)}"` : '';
+    const details = check.details || 'Matched with high confidence';
+
+    return `
+      <div class="job-scraper-llm__line">
+        <span class="job-scraper-llm__fit-symbol"${style}>${escapeHtml(icon)}</span>${escapeHtml(check.criterion)}: ${escapeHtml(details)}
       </div>
     `;
   }
@@ -967,6 +1060,13 @@ ${jdText}
 
   function statusColor(status) {
     return cleanMetadataText(CONFIG.statusColors?.[status]);
+  }
+
+  function triggeredFitChecks(result, status) {
+    const checks = result.fitChecks?.[status];
+    if (!Array.isArray(checks)) return [];
+
+    return checks.filter((check) => check.matches && check.confidence === 'high');
   }
 
   function resetJobState() {
@@ -1189,6 +1289,7 @@ ${jdText}
     return normalizeText(text)
       .replace(/^About the job\s*/i, '')
       .replace(/\n?Show more\s*$/i, '')
+      .replace(/\s*(?:…|\.\.\.)\s*more\s*$/i, '')
       .trim();
   }
 
@@ -1219,6 +1320,17 @@ ${jdText}
   function firstElement(selectors) {
     for (const selector of selectors) {
       const element = document.querySelector(selector);
+      if (element) return element;
+    }
+
+    return null;
+  }
+
+  function firstElementFrom(root, selectors) {
+    if (!root) return null;
+
+    for (const selector of selectors) {
+      const element = root.querySelector(selector);
       if (element) return element;
     }
 
