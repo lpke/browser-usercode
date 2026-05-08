@@ -122,6 +122,7 @@
     'inconclusive',
   ]);
   const VALID_ASSESSMENT = new Set(['good', 'bad', 'uncertain']);
+  const RESULT_SCHEMA = buildResultSchema();
 
   const state = {
     site: detectSite(),
@@ -773,6 +774,7 @@
       <div class="job-scraper-llm__header">
         <div class="job-scraper-llm__title">Raw JSON</div>
         <div class="job-scraper-llm__controls">
+          <button class="job-scraper-llm__button" type="button" data-action="copy-json" title="Copy JSON" aria-label="Copy JSON">⎘</button>
           <button class="job-scraper-llm__button" type="button" data-action="close-json" title="Close JSON" aria-label="Close JSON">×</button>
         </div>
       </div>
@@ -806,6 +808,7 @@
 
   function installJsonWindowEvents(win) {
     const header = win.querySelector('.job-scraper-llm__header');
+    const copyButton = win.querySelector('[data-action="copy-json"]');
     const closeButton = win.querySelector('[data-action="close-json"]');
     let dragStart = null;
 
@@ -847,25 +850,54 @@
       dragStart = null;
     });
 
+    copyButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      copyJson();
+    });
+
+    copyButton.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+    });
+
     closeButton.addEventListener('click', (event) => {
       event.stopPropagation();
       closeJsonWindow();
     });
+
+    closeButton.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+    });
+  }
+
+  function copyJson() {
+    const text = state.jsonContent?.textContent || jsonWindowText();
+    if (!text) return;
+
+    GM_setClipboard(text, 'text');
   }
 
   function closeJsonWindow() {
     if (!state.jsonWindow) return;
 
-    state.jsonWindow.hidden = true;
+    state.jsonWindow.remove();
+    state.jsonWindow = null;
+    state.jsonContent = null;
   }
 
   function updateJsonWindowContent() {
     if (!state.jsonContent) return;
 
-    const rawJson =
+    state.jsonContent.textContent = jsonWindowText();
+  }
+
+  function jsonWindowText() {
+    return (
       state.currentRawJson ||
-      (state.currentResult ? JSON.stringify(state.currentResult, null, 2) : '');
-    state.jsonContent.textContent = rawJson || 'No JSON output available yet.';
+      (state.currentResult
+        ? JSON.stringify(state.currentResult, null, 2)
+        : '') ||
+      'No JSON output available yet.'
+    );
   }
 
   function scheduleRun(delayMs, options = {}) {
@@ -1303,30 +1335,13 @@
     start();
   }
 
-  function queryLLM(jdText, onStatus = () => {}) {
-    return retryParse(async () => {
-      const raw = await requestOllamaQueued(jdText, onStatus);
-      const parsed = parseJsonResponse(raw);
-      return {
-        result: validateResult(parsed),
-        rawJson: raw,
-      };
-    });
-  }
-
-  async function retryParse(factory) {
-    let lastError = null;
-
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        return await factory();
-      } catch (error) {
-        lastError = error;
-        if (error.code !== 'parse' && error.code !== 'shape') throw error;
-      }
-    }
-
-    throw lastError;
+  async function queryLLM(jdText, onStatus = () => {}) {
+    const raw = await requestOllamaQueued(jdText, onStatus);
+    const parsed = parseJsonResponse(raw);
+    return {
+      result: validateResult(parsed),
+      rawJson: raw,
+    };
   }
 
   async function requestOllamaQueued(jdText, onStatus = () => {}) {
@@ -1547,11 +1562,11 @@
         headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify({
           model: CONFIG.model,
-          prompt: buildPrompt(jdText),
-          format: 'json',
+          prompt: buildPrompt(jdText, RESULT_SCHEMA),
+          format: RESULT_SCHEMA,
           stream: false,
           options: {
-            temperature: 0.1,
+            temperature: 0,
             num_predict: CONFIG.numPredict,
           },
         }),
@@ -1589,54 +1604,89 @@
     });
   }
 
-  function buildPrompt(jdText) {
+  function buildResultSchema() {
+    const fitChecks = {
+      bad: fitCheckListSchema(fitCriterionTexts(CONFIG.bad)),
+      good: fitCheckListSchema(fitCriterionTexts(CONFIG.good)),
+    };
+
+    return strictObjectSchema({
+      jobTitle: nullableSchema('string'),
+      workArrangement: strictObjectSchema({
+        type: enumStringSchema(VALID_WORK_TYPES),
+        daysInOffice: nullableSchema('number'),
+        daysInOfficeMin: nullableSchema('number'),
+        daysInOfficeMax: nullableSchema('number'),
+        details: { type: 'string' },
+        confidence: enumStringSchema(VALID_CONFIDENCE),
+      }),
+      pay: strictObjectSchema({
+        range: nullableSchema('string'),
+        type: enumStringSchema(VALID_PAY_TYPES),
+        includesSuper: { type: 'boolean' },
+        isOTE: { type: 'boolean' },
+        confidence: enumStringSchema(VALID_CONFIDENCE),
+      }),
+      techStack: strictObjectSchema({
+        required: stringListSchema(),
+        optional: stringListSchema(),
+      }),
+      fitChecks: strictObjectSchema(fitChecks),
+    });
+  }
+
+  function strictObjectSchema(properties) {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties,
+      required: Object.keys(properties),
+    };
+  }
+
+  function nullableSchema(type) {
+    return { type: [type, 'null'] };
+  }
+
+  function enumStringSchema(values) {
+    return { type: 'string', enum: Array.from(values) };
+  }
+
+  function stringListSchema() {
+    return {
+      type: 'array',
+      items: { type: 'string' },
+    };
+  }
+
+  function fitCheckListSchema(criteria) {
+    return {
+      type: 'array',
+      minItems: criteria.length,
+      maxItems: criteria.length,
+      items: strictObjectSchema({
+        criterion: criteria.length
+          ? { type: 'string', enum: criteria }
+          : { type: 'string' },
+        matches: { type: 'boolean' },
+        confidence: enumStringSchema(VALID_FIT_CONFIDENCE),
+        details: { type: 'string' },
+      }),
+    };
+  }
+
+  function buildPrompt(jdText, schema = RESULT_SCHEMA) {
     const badCriteria = JSON.stringify(fitCriterionTexts(CONFIG.bad), null, 2);
     const goodCriteria = JSON.stringify(
       fitCriterionTexts(CONFIG.good),
       null,
       2,
     );
+    const schemaText = JSON.stringify(schema, null, 2);
 
-    return `You are a job listing data extractor. Analyse the following job description and return a JSON object with exactly this shape:
+    return `You are a job listing data extractor. Analyse the following job description and return one JSON object that validates against this JSON Schema:
 
-{
-  "jobTitle": "<job title or null>",
-  "workArrangement": {
-    "type": "remote" | "hybrid" | "onsite" | "unknown",
-    "daysInOffice": <number or null>,
-    "details": "<brief note, eg 'flexible 2-3 days per week'>",
-    "confidence": "high" | "medium" | "low"
-  },
-  "pay": {
-    "range": "<formatted string, eg '$130k-$160k + super' or '$100-$115/hour', or null if not found>",
-    "type": "annual" | "daily" | "hourly" | "unknown",
-    "includesSuper": <boolean>,
-    "isOTE": <boolean>,
-    "confidence": "high" | "medium" | "low"
-  },
-  "techStack": {
-    "required": ["<tech>", ...],
-    "optional": ["<tech>", ...]
-  },
-  "fitChecks": {
-    "bad": [
-      {
-        "criterion": "<exact bad criterion string>",
-        "matches": <boolean>,
-        "confidence": "high" | "medium" | "low" | "inconclusive",
-        "details": "<brief evidence note>"
-      }
-    ],
-    "good": [
-      {
-        "criterion": "<exact good criterion string>",
-        "matches": <boolean>,
-        "confidence": "high" | "medium" | "low" | "inconclusive",
-        "details": "<brief evidence note>"
-      }
-    ]
-  }
-}
+${schemaText}
 
 Bad criteria to evaluate one item at a time, in order:
 ${badCriteria}
@@ -1661,7 +1711,12 @@ Rules:
 - Do not classify tech from responsibilities, product descriptions, company stack, or generic "we use" sections as required unless the candidate requirement wording is explicit
 - If the same tech appears as both required and optional, include it only in required
 - Order tech arrays from strongest and most prominent evidence to weakest: core role tech, title/summary tech, repeated tech, and explicit must-have tech first. Do not sort alphabetically
-- For workArrangement: if the listing mentions specific days, extract the number. If conflicting signals exist, set confidence to "low" and note in details
+- For workArrangement: if the listing mentions a single specific day count, set daysInOffice, daysInOfficeMin, and daysInOfficeMax to that number
+- For workArrangement: if the listing mentions a range such as "2-3 days in office", set daysInOffice and daysInOfficeMin to the lower number, daysInOfficeMax to the upper number, and mention the range in details
+- For workArrangement: if the listing says "hybrid" but does not explicitly state the number of office days, set daysInOffice, daysInOfficeMin, and daysInOfficeMax to null. Do not assume hybrid means 2-3 days
+- For workArrangement fit checks: never match day-count criteria from a generic "hybrid" label alone. Day-count criteria need explicit office-day evidence in the listing
+- For workArrangement fit checks: compare hybrid day-count thresholds using daysInOfficeMin, the lower number of a range. For example, "2-3 days in office" counts as 2 for "hybrid >= 3 days in office", so that criterion is false unless other evidence supports 3+ required days
+- For workArrangement: if conflicting signals exist, set confidence to "low" and note the conflict in details
 - Input has metadata, compact source HTML, and plain text. Cross-check them; prefer explicit metadata/source HTML over inference
 - For pay: preserve frequency; never convert hourly/daily to annual. Compare fit thresholds only with the same frequency
 - If a field cannot be determined, set it to null/unknown with confidence "low"
@@ -1675,6 +1730,8 @@ ${jdText}
   }
 
   function parseJsonResponse(raw) {
+    if (raw && typeof raw === 'object') return raw;
+
     try {
       return JSON.parse(raw);
     } catch (firstError) {
@@ -1704,6 +1761,10 @@ ${jdText}
     const work = input.workArrangement || {};
     const pay = input.pay || {};
     const tech = input.techStack || {};
+    const workArrangement = normalizeWorkArrangement(
+      work,
+      state.currentJobText,
+    );
     let fitChecks = {
       bad: normalizeFitChecks(input.fitChecks?.bad, CONFIG.bad),
       good: normalizeFitChecks(input.fitChecks?.good, CONFIG.good),
@@ -1712,15 +1773,11 @@ ${jdText}
       fitChecks,
       state.currentPayEvidence,
     );
+    fitChecks = applyWorkArrangementToFitChecks(fitChecks, workArrangement);
     fitChecks = resolveFitCheckConflicts(fitChecks);
     const result = {
       jobTitle: cleanJobTitle(input.jobTitle),
-      workArrangement: {
-        type: enumValue(work.type, VALID_WORK_TYPES, 'unknown'),
-        daysInOffice: numberOrNull(work.daysInOffice),
-        details: stringOrEmpty(work.details),
-        confidence: enumValue(work.confidence, VALID_CONFIDENCE, 'low'),
-      },
+      workArrangement,
       pay: {
         range: stringOrNull(pay.range),
         type: enumValue(pay.type, VALID_PAY_TYPES, 'unknown'),
@@ -1744,19 +1801,6 @@ ${jdText}
     applyPayEvidenceToResult(result, state.currentPayEvidence);
     result.assessment = buildAssessment(result.fitChecks);
 
-    if (
-      !input.workArrangement ||
-      !input.pay ||
-      !input.techStack ||
-      !input.fitChecks
-    ) {
-      throw userError(
-        'shape',
-        'Model JSON missing required top-level fields',
-        JSON.stringify(input, null, 2),
-      );
-    }
-
     const requiredKeys = new Set(
       result.techStack.required.map((item) => item.toLowerCase()),
     );
@@ -1765,6 +1809,109 @@ ${jdText}
     );
 
     return result;
+  }
+
+  function normalizeWorkArrangement(work, sourceText) {
+    const type = enumValue(work?.type, VALID_WORK_TYPES, 'unknown');
+    const hasOfficeDayEvidence =
+      type === 'hybrid' && hasExplicitOfficeDayCount(sourceText);
+    const workDays =
+      type === 'hybrid' && hasOfficeDayEvidence
+        ? normalizeWorkDays(work)
+        : { min: null, max: null };
+
+    return {
+      type,
+      daysInOffice: workDays.min,
+      daysInOfficeMin: workDays.min,
+      daysInOfficeMax: workDays.max,
+      details: workDetailsWithoutUnsupportedDays(
+        work?.details,
+        type,
+        hasOfficeDayEvidence,
+      ),
+      confidence: enumValue(work?.confidence, VALID_CONFIDENCE, 'low'),
+    };
+  }
+
+  function workDetailsWithoutUnsupportedDays(
+    details,
+    type,
+    hasOfficeDayEvidence,
+  ) {
+    const text = stringOrEmpty(details);
+    if (type !== 'hybrid' || hasOfficeDayEvidence) return text;
+
+    return explicitOfficeDayPhrasePattern().test(text) ? '' : text;
+  }
+
+  function hasExplicitOfficeDayCount(text) {
+    return explicitOfficeDayPhrasePattern().test(cleanMetadataText(text));
+  }
+
+  function explicitOfficeDayPhrasePattern() {
+    const number = String.raw`(?:\d+(?:\.\d+)?|one|two|three|four|five)`;
+    const range = String.raw`${number}\s*(?:-|–|—|\bto\b|\bor\b)\s*${number}`;
+    const qualifier = String.raw`(?:(?:at\s+least|min(?:imum)?(?:\s+of)?|up\s+to|around|about|approx(?:imately)?)\s+)?`;
+    const count = String.raw`${qualifier}(?:${range}|${number}\s*\+?)`;
+    const office = String.raw`(?:office|on[-\s]?site|onsite|workplace|work\s+site|site)`;
+    const day = String.raw`(?:d|day|days)`;
+    const frequency = String.raw`(?:week|weekly|fortnight|fortnightly|month|monthly)`;
+    const cadence = String.raw`(?:\s*(?:a|per|\/)\s*${frequency})?`;
+    const countThenOffice = String.raw`${count}\s*${day}s?${cadence}[^.\n;:]{0,80}\b${office}\b`;
+    const officeThenCount = String.raw`\b${office}\b[^.\n;:]{0,80}${count}\s*${day}s?${cadence}`;
+    const officeDays = String.raw`${count}\s*\b${office}\b\s*${day}s?${cadence}`;
+
+    return new RegExp(
+      String.raw`(?:${countThenOffice}|${officeThenCount}|${officeDays})`,
+      'i',
+    );
+  }
+
+  function normalizeWorkDays(work) {
+    const fromExplicitRange = normalizeNumberRange(
+      work?.daysInOfficeMin,
+      work?.daysInOfficeMax,
+    );
+    if (fromExplicitRange.min !== null || fromExplicitRange.max !== null) {
+      return fromExplicitRange;
+    }
+
+    return normalizeWorkDaysValue(work?.daysInOffice);
+  }
+
+  function normalizeWorkDaysValue(value) {
+    if (Array.isArray(value)) {
+      return normalizeNumberRange(value[0], value[1]);
+    }
+
+    if (typeof value === 'string') {
+      const matches = [...value.matchAll(/\d+(?:\.\d+)?/g)]
+        .map((match) => Number(match[0]))
+        .filter(Number.isFinite);
+      if (matches.length >= 2) {
+        return normalizeNumberRange(matches[0], matches[1]);
+      }
+      if (matches.length === 1) return normalizeNumberRange(matches[0], null);
+    }
+
+    return normalizeNumberRange(value, null);
+  }
+
+  function normalizeNumberRange(minValue, maxValue) {
+    const min = numberOrNull(minValue);
+    const max = numberOrNull(maxValue);
+    if (!Number.isFinite(min) && !Number.isFinite(max)) {
+      return { min: null, max: null };
+    }
+
+    if (!Number.isFinite(min)) return { min: max, max };
+    if (!Number.isFinite(max)) return { min, max: min };
+
+    return {
+      min: Math.min(min, max),
+      max: Math.max(min, max),
+    };
   }
 
   function renderLoading(message) {
@@ -1979,12 +2126,26 @@ ${jdText}
       rawType === 'onsite'
         ? 'Onsite'
         : rawType.charAt(0).toUpperCase() + rawType.slice(1);
-    const days =
-      rawType === 'hybrid' && Number.isFinite(work?.daysInOffice)
-        ? ` ${work.daysInOffice}d`
-        : '';
+    const days = rawType === 'hybrid' ? workDaysText(work) : '';
 
     return `${type}${days}`;
+  }
+
+  function workDaysText(work) {
+    const range = normalizeWorkDays(work);
+    if (!Number.isFinite(range.min)) return '';
+
+    const min = formatWorkDayCount(range.min);
+    const max = Number.isFinite(range.max)
+      ? formatWorkDayCount(range.max)
+      : min;
+    if (min !== max) return ` ${min}-${max}d`;
+
+    return ` ${min}d`;
+  }
+
+  function formatWorkDayCount(value) {
+    return Number.isInteger(value) ? String(value) : String(value);
   }
 
   function payText(pay) {
@@ -2067,10 +2228,10 @@ ${jdText}
     if (type === 'onsite') return 5;
     if (type !== 'hybrid') return null;
 
-    const days = Number(work?.daysInOffice);
-    if (!Number.isFinite(days)) return null;
+    const { min } = normalizeWorkDays(work);
+    if (!Number.isFinite(min)) return null;
 
-    return clamp(Math.round(days), 1, 4);
+    return clamp(min, 1, 4);
   }
 
   function configNumber(value) {
@@ -2281,6 +2442,90 @@ ${jdText}
       const evaluation = evaluatePayCriterion(check?.criterion, evidence, kind);
       return evaluation ? { ...check, ...evaluation } : check;
     });
+  }
+
+  function applyWorkArrangementToFitChecks(fitChecks, work) {
+    if (!work || work.type === 'unknown') return fitChecks;
+
+    return {
+      bad: applyWorkArrangementToCheckList(fitChecks.bad, work),
+      good: applyWorkArrangementToCheckList(fitChecks.good, work),
+    };
+  }
+
+  function applyWorkArrangementToCheckList(checks, work) {
+    if (!Array.isArray(checks)) return [];
+
+    return checks.map((check) => {
+      const evaluation = evaluateWorkCriterion(check?.criterion, work);
+      return evaluation ? { ...check, ...evaluation } : check;
+    });
+  }
+
+  function evaluateWorkCriterion(criterion, work) {
+    const text = cleanMetadataText(criterion);
+    if (!text) return null;
+    if (/\blocation|based in|sydney|nsw\b/i.test(text)) return null;
+
+    if (/\bfully\s+remote\b|\bremote\b/i.test(text)) {
+      return formatWorkCriterionEvaluation(
+        work,
+        work.type === 'remote',
+        'work type is remote',
+        'work type is not remote',
+      );
+    }
+
+    if (/\bon[-\s]?site\b|\bonsite\b/i.test(text)) {
+      return formatWorkCriterionEvaluation(
+        work,
+        work.type === 'onsite',
+        'work type is on-site',
+        'work type is not on-site',
+      );
+    }
+
+    if (/\bhybrid\b/i.test(text)) {
+      const threshold = extractHybridDaysThreshold(text);
+      if (!Number.isFinite(threshold)) return null;
+
+      const score = workSetupScore(work);
+      if (!Number.isFinite(score)) {
+        return {
+          matches: false,
+          confidence: 'inconclusive',
+          details: 'Hybrid work is mentioned, but office-day count is unclear',
+        };
+      }
+
+      const matches = work.type === 'hybrid' && score >= threshold;
+      return {
+        matches,
+        confidence: 'high',
+        details: `${formatWorkForDetails(work)} counts as ${formatWorkDayCount(score)} day(s) for fit checks; ${matches ? 'meets' : 'does not meet'} hybrid >= ${formatWorkDayCount(threshold)} days in office`,
+      };
+    }
+
+    return null;
+  }
+
+  function extractHybridDaysThreshold(text) {
+    const match = cleanMetadataText(text).match(
+      /(?:>=|≥|at least|minimum(?: of)?|min(?:imum)?\.?)\s*(\d+(?:\.\d+)?)\s*(?:d|day|days)?/i,
+    );
+    return match ? Number(match[1]) : null;
+  }
+
+  function formatWorkCriterionEvaluation(work, matches, trueText, falseText) {
+    return {
+      matches,
+      confidence: 'high',
+      details: `${formatWorkForDetails(work)}; ${matches ? trueText : falseText}`,
+    };
+  }
+
+  function formatWorkForDetails(work) {
+    return `Work arrangement is ${workText(work)}`;
   }
 
   function resolveFitCheckConflicts(fitChecks) {
@@ -3311,8 +3556,17 @@ ${jdText}
       );
     }
 
-    if (error?.code === 'parse' || error?.code === 'shape') {
-      return userError(error.code, 'Parse error', error.raw || '', error);
+    if (error?.code === 'parse') {
+      return userError('parse', 'Parse error', error.raw || '', error);
+    }
+
+    if (error?.code === 'shape') {
+      return userError(
+        'shape',
+        error.message || 'Invalid model JSON',
+        error.raw || '',
+        error,
+      );
     }
 
     if (error?.code === 'not_found') {
