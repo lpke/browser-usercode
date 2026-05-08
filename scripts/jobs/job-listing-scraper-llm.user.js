@@ -30,6 +30,27 @@
   'use strict';
 
   const CONFIG = {
+    // HIGHLIGHTING
+    workGood: 0,
+    workBad: 3,
+
+    // Tech names are matched against these regexes.
+    goodTech: [
+      /TypeScript/i,
+      /React/i,
+      /Node(?:\.js)?/i,
+      /Next(?:\.js)?/i,
+      /GraphQL/i,
+    ],
+    badTech: [
+      /\.NET/i,
+      /\bJava\b/i,
+      /(^|[^\w])C#($|[^\w])/i,
+      /(^|[^\w])C\+\+($|[^\w])/i,
+    ],
+
+    // LLM CRITERIA
+    // ['<criteria>', '<optional category for grouping>']
     good: [
       ['pay > 165k or $110+/hour', 'pay'],
       ['fully remote', 'work-arrangement'],
@@ -41,32 +62,12 @@
       '.NET, Java, C#, C++ required',
       ['hybrid but not based in Sydney/NSW', 'work-arrangement'],
     ],
-    goodTech: [
-      'TypeScript',
-      'React',
-      'Node(?:\\.js)?',
-      'Next(?:\\.js)?',
-      'GraphQL',
-    ],
-    badTech: ['\\.NET', '\\bJava\\b', '\\bC#\\b', '\\bC\\+\\+\\b'],
-    model: 'qwen2.5:7b',
-    ollamaUrl: 'http://localhost:11434',
-    timeout: 15000,
-    numPredict: 1024,
-    statusIcons: {
-      good: '✓',
-      bad: '✕',
-      uncertain: '?',
-    },
+
+    // COLORS
     statusColors: {
       good: '#86efac',
       bad: '#fca5a5',
       uncertain: '#93c5fd',
-    },
-    confidenceSymbols: {
-      low: '▂',
-      medium: '▅',
-      high: '█',
     },
     confidenceColor: '#666b71',
     confidenceColors: {
@@ -74,10 +75,30 @@
       medium: '#666b71',
       high: '#8a9098',
     },
-    techMatchColors: {
+    matchColors: {
       good: '#a8e5c4',
       bad: '#f4bcbc',
     },
+
+    // ICONS
+    statusIcons: {
+      good: '✓',
+      bad: '✕',
+      uncertain: '?',
+    },
+    confidenceSymbols: {
+      low: '▂',
+      medium: '▅',
+      high: '█',
+    },
+
+    // MODEL
+    model: 'qwen2.5:7b',
+    ollamaUrl: 'http://localhost:11434',
+    timeout: 15000,
+    numPredict: 1024,
+
+    // LLM QUEUE
     queueMaxConcurrent: 2,
     queueLeaseMs: 30000,
     queueWaitFailOpenMs: 60000,
@@ -86,6 +107,7 @@
   };
 
   const PANEL_ID = 'job-scraper-llm-panel';
+  const JSON_WINDOW_ID = 'job-scraper-llm-json-window';
   const PANEL_POSITION_KEY = 'jobScraperLlmPanelPosition';
   const PANEL_COLLAPSED_KEY = 'jobScraperLlmPanelCollapsed';
   const OLLAMA_QUEUE_KEY = 'jobScraperLlmOllamaQueue';
@@ -104,9 +126,12 @@
   const state = {
     site: detectSite(),
     panel: null,
+    jsonWindow: null,
+    jsonContent: null,
     content: null,
     titleElement: null,
     currentResult: null,
+    currentRawJson: '',
     currentJobText: '',
     currentPayEvidence: null,
     currentError: null,
@@ -152,12 +177,9 @@
 
   function addStyles() {
     GM_addStyle(`
-      #${PANEL_ID} {
+      #${PANEL_ID},
+      #${JSON_WINDOW_ID} {
         position: fixed;
-        top: 88px;
-        right: 24px;
-        width: min(380px, calc(100vw - 24px));
-        max-height: calc(100vh - 120px);
         z-index: 2147483647;
         background: rgba(17, 24, 39, 0.94);
         color: #f9fafb;
@@ -169,7 +191,24 @@
         backdrop-filter: blur(10px);
       }
 
-      #${PANEL_ID}, #${PANEL_ID} * {
+      #${PANEL_ID} {
+        top: 88px;
+        right: 24px;
+        width: min(380px, calc(100vw - 24px));
+        max-height: calc(100vh - 120px);
+      }
+
+      #${JSON_WINDOW_ID} {
+        width: min(620px, calc(100vw - 24px));
+        height: min(520px, calc(100vh - 24px));
+        min-width: 320px;
+        min-height: 180px;
+        overflow: hidden;
+        resize: both;
+      }
+
+      #${PANEL_ID}, #${PANEL_ID} *,
+      #${JSON_WINDOW_ID}, #${JSON_WINDOW_ID} * {
         box-sizing: border-box;
       }
 
@@ -177,7 +216,12 @@
         max-height: 42px;
       }
 
-      #${PANEL_ID} .job-scraper-llm__header {
+      #${PANEL_ID}.job-scraper-llm--menu-open {
+        overflow: visible;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__header,
+      #${JSON_WINDOW_ID} .job-scraper-llm__header {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -192,7 +236,8 @@
         border-bottom: 0;
       }
 
-      #${PANEL_ID} .job-scraper-llm__title {
+      #${PANEL_ID} .job-scraper-llm__title,
+      #${JSON_WINDOW_ID} .job-scraper-llm__title {
         flex: 1 1 auto;
         min-width: 0;
         color: #ffffff;
@@ -203,13 +248,22 @@
         text-overflow: ellipsis;
       }
 
-      #${PANEL_ID} .job-scraper-llm__controls {
+      #${PANEL_ID} .job-scraper-llm__controls,
+      #${JSON_WINDOW_ID} .job-scraper-llm__controls {
         display: flex;
         flex: 0 0 auto;
         gap: 4px;
+        position: relative;
+        z-index: 3;
       }
 
-      #${PANEL_ID} .job-scraper-llm__button {
+      #${PANEL_ID} .job-scraper-llm__menu-wrap {
+        position: relative;
+        display: flex;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__button,
+      #${JSON_WINDOW_ID} .job-scraper-llm__button {
         appearance: none;
         border: 1px solid rgba(255, 255, 255, 0.2);
         border-radius: 6px;
@@ -224,13 +278,72 @@
         cursor: pointer;
       }
 
-      #${PANEL_ID} .job-scraper-llm__button:hover {
+      #${PANEL_ID} .job-scraper-llm__button:hover,
+      #${JSON_WINDOW_ID} .job-scraper-llm__button:hover {
         background: rgba(255, 255, 255, 0.16);
       }
 
-      #${PANEL_ID} .job-scraper-llm__button:disabled {
+      #${PANEL_ID} .job-scraper-llm__button:disabled,
+      #${JSON_WINDOW_ID} .job-scraper-llm__button:disabled {
         cursor: default;
         opacity: 0.48;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__menu {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        min-width: 154px;
+        padding: 4px;
+        background: rgba(17, 24, 39, 0.98);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 6px;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.34);
+        z-index: 4;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__menu[hidden] {
+        display: none;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__menu-item {
+        appearance: none;
+        display: block;
+        width: 100%;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: #f9fafb;
+        padding: 6px 8px;
+        font: inherit;
+        font-size: 12px;
+        line-height: 1.2;
+        text-align: left;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__menu-item:hover,
+      #${PANEL_ID} .job-scraper-llm__menu-item:focus {
+        background: rgba(255, 255, 255, 0.14);
+        outline: none;
+      }
+
+      #${JSON_WINDOW_ID} .job-scraper-llm__json-body {
+        height: calc(100% - 42px);
+        overflow: auto;
+        padding: 12px;
+      }
+
+      #${JSON_WINDOW_ID} .job-scraper-llm__json-view {
+        margin: 0;
+        padding: 8px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 6px;
+        color: #e5e7eb;
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       }
 
       #${PANEL_ID} .job-scraper-llm__body {
@@ -389,7 +502,14 @@
       <div class="job-scraper-llm__header">
         <div class="job-scraper-llm__title">Job Scraper</div>
         <div class="job-scraper-llm__controls">
-          <button class="job-scraper-llm__button" type="button" data-action="copy" title="Copy summary" aria-label="Copy summary">⎘</button>
+          <div class="job-scraper-llm__menu-wrap">
+            <button class="job-scraper-llm__button" type="button" data-action="menu" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">⋮</button>
+            <div class="job-scraper-llm__menu" role="menu" hidden>
+              <button class="job-scraper-llm__menu-item" type="button" role="menuitem" data-menu-action="copy-results">⎘ Copy results</button>
+              <button class="job-scraper-llm__menu-item" type="button" role="menuitem" data-menu-action="copy-url">⎘ Copy URL</button>
+              <button class="job-scraper-llm__menu-item" type="button" role="menuitem" data-menu-action="view-json">◎ View JSON</button>
+            </div>
+          </div>
           <button class="job-scraper-llm__button" type="button" data-action="retry" title="Retry analysis" aria-label="Retry analysis">⟳</button>
         </div>
       </div>
@@ -424,7 +544,8 @@
 
   function installPanelEvents(panel) {
     const header = panel.querySelector('.job-scraper-llm__header');
-    const copyButton = panel.querySelector('[data-action="copy"]');
+    const menuButton = panel.querySelector('[data-action="menu"]');
+    const menu = panel.querySelector('.job-scraper-llm__menu');
     const retryButton = panel.querySelector('[data-action="retry"]');
     let dragStart = null;
 
@@ -475,13 +596,23 @@
       dragStart = null;
     });
 
-    copyButton.addEventListener('click', (event) => {
+    menuButton.addEventListener('click', (event) => {
       event.stopPropagation();
-      copySummary();
+      toggleActionMenu();
+    });
+
+    menu.addEventListener('click', (event) => {
+      const item = event.target.closest('[data-menu-action]');
+      if (!item || !menu.contains(item)) return;
+
+      event.stopPropagation();
+      closeActionMenu();
+      runMenuAction(item.dataset.menuAction);
     });
 
     retryButton.addEventListener('click', (event) => {
       event.stopPropagation();
+      closeActionMenu();
       scheduleRun(0, { force: true });
     });
 
@@ -507,9 +638,56 @@
     });
 
     window.addEventListener('resize', () => {
+      closeActionMenu();
       updateTitleTooltip();
       updateTechClampState();
     });
+
+    document.addEventListener('click', (event) => {
+      if (!panel.contains(event.target)) closeActionMenu();
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      closeActionMenu();
+    });
+  }
+
+  function toggleActionMenu() {
+    const menu = state.panel?.querySelector('.job-scraper-llm__menu');
+    const button = state.panel?.querySelector('[data-action="menu"]');
+    if (!menu || !button) return;
+
+    const shouldOpen = menu.hidden;
+    menu.hidden = !shouldOpen;
+    state.panel.classList.toggle('job-scraper-llm--menu-open', shouldOpen);
+    button.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+  }
+
+  function closeActionMenu() {
+    const menu = state.panel?.querySelector('.job-scraper-llm__menu');
+    const button = state.panel?.querySelector('[data-action="menu"]');
+    if (!menu || !button) return;
+
+    menu.hidden = true;
+    state.panel.classList.remove('job-scraper-llm--menu-open');
+    button.setAttribute('aria-expanded', 'false');
+  }
+
+  function runMenuAction(action) {
+    if (action === 'copy-results') {
+      copySummary();
+      return;
+    }
+
+    if (action === 'copy-url') {
+      copyUrl();
+      return;
+    }
+
+    if (action === 'view-json') {
+      openJsonWindow();
+    }
   }
 
   function toggleCollapsed() {
@@ -573,6 +751,123 @@
     GM_setClipboard(text, 'text');
   }
 
+  function copyUrl() {
+    GM_setClipboard(location.href, 'text');
+  }
+
+  function openJsonWindow() {
+    const win = ensureJsonWindow();
+    updateJsonWindowContent();
+    win.hidden = false;
+  }
+
+  function ensureJsonWindow() {
+    if (state.jsonWindow && document.body.contains(state.jsonWindow)) {
+      return state.jsonWindow;
+    }
+
+    const win = document.createElement('section');
+    win.id = JSON_WINDOW_ID;
+    win.setAttribute('aria-label', 'Raw LLM JSON output');
+    win.innerHTML = `
+      <div class="job-scraper-llm__header">
+        <div class="job-scraper-llm__title">Raw JSON</div>
+        <div class="job-scraper-llm__controls">
+          <button class="job-scraper-llm__button" type="button" data-action="close-json" title="Close JSON" aria-label="Close JSON">×</button>
+        </div>
+      </div>
+      <div class="job-scraper-llm__json-body">
+        <pre class="job-scraper-llm__json-view"></pre>
+      </div>
+    `;
+
+    state.jsonWindow = win;
+    state.jsonContent = win.querySelector('.job-scraper-llm__json-view');
+    positionJsonWindow(win);
+    installJsonWindowEvents(win);
+    document.body.appendChild(win);
+
+    return win;
+  }
+
+  function positionJsonWindow(win) {
+    const panelRect = state.panel?.getBoundingClientRect();
+    const width = Math.min(620, window.innerWidth - 24);
+    const height = Math.min(520, window.innerHeight - 24);
+    const preferredLeft = panelRect ? panelRect.left - width - 12 : 24;
+    const preferredTop = panelRect ? panelRect.top : 88;
+
+    win.style.width = `${width}px`;
+    win.style.height = `${height}px`;
+    win.style.left = `${clamp(preferredLeft, 8, window.innerWidth - width - 8)}px`;
+    win.style.top = `${clamp(preferredTop, 8, window.innerHeight - 80)}px`;
+    win.style.right = 'auto';
+  }
+
+  function installJsonWindowEvents(win) {
+    const header = win.querySelector('.job-scraper-llm__header');
+    const closeButton = win.querySelector('[data-action="close-json"]');
+    let dragStart = null;
+
+    header.addEventListener('mousedown', (event) => {
+      if (event.button !== 0 || event.target.closest('button')) return;
+
+      const rect = win.getBoundingClientRect();
+      dragStart = {
+        pointerX: event.clientX,
+        pointerY: event.clientY,
+        left: rect.left,
+        top: rect.top,
+      };
+
+      event.preventDefault();
+    });
+
+    window.addEventListener('mousemove', (event) => {
+      if (!dragStart) return;
+
+      const rect = win.getBoundingClientRect();
+      const left = clamp(
+        dragStart.left + event.clientX - dragStart.pointerX,
+        8,
+        window.innerWidth - rect.width - 8,
+      );
+      const top = clamp(
+        dragStart.top + event.clientY - dragStart.pointerY,
+        8,
+        window.innerHeight - 42,
+      );
+
+      win.style.left = `${left}px`;
+      win.style.top = `${top}px`;
+      win.style.right = 'auto';
+    });
+
+    window.addEventListener('mouseup', () => {
+      dragStart = null;
+    });
+
+    closeButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closeJsonWindow();
+    });
+  }
+
+  function closeJsonWindow() {
+    if (!state.jsonWindow) return;
+
+    state.jsonWindow.hidden = true;
+  }
+
+  function updateJsonWindowContent() {
+    if (!state.jsonContent) return;
+
+    const rawJson =
+      state.currentRawJson ||
+      (state.currentResult ? JSON.stringify(state.currentResult, null, 2) : '');
+    state.jsonContent.textContent = rawJson || 'No JSON output available yet.';
+  }
+
   function scheduleRun(delayMs, options = {}) {
     window.clearTimeout(pendingRun);
     pendingRun = window.setTimeout(() => {
@@ -619,13 +914,15 @@
 
       state.lastSignature = signature;
       renderLoading('Analysing...');
-      const result = await queryLLM(extraction.text, (message) => {
+      const { result, rawJson } = await queryLLM(extraction.text, (message) => {
         if (runId === state.runId) renderLoading(message);
       });
       if (runId !== state.runId) return;
 
       state.currentResult = result;
+      state.currentRawJson = rawJson;
       state.currentError = null;
+      updateJsonWindowContent();
       applyResultState(result);
       renderSuccess(result);
     } catch (error) {
@@ -633,7 +930,9 @@
 
       const friendly = toUserError(error);
       state.currentResult = null;
+      state.currentRawJson = '';
       state.currentError = friendly;
+      updateJsonWindowContent();
       state.currentPayEvidence = null;
       state.assessmentStatus = 'uncertain';
       state.assessment = null;
@@ -773,10 +1072,10 @@
   function hasExtractableDescription() {
     if (state.site === 'linkedin') {
       const root = getLinkedInDescriptionRoot();
-      return getLinkedInDescriptionText(
-        root,
-        getLinkedInDescriptionBody(root),
-      ).length >= 80;
+      return (
+        getLinkedInDescriptionText(root, getLinkedInDescriptionBody(root))
+          .length >= 80
+      );
     }
 
     const body = firstElement([
@@ -825,10 +1124,14 @@
     const path = location.pathname;
 
     if (state.site === 'linkedin') {
-      return /^\/jobs\/search/.test(path) || /^\/jobs\/search-results/.test(path);
+      return (
+        /^\/jobs\/search/.test(path) || /^\/jobs\/search-results/.test(path)
+      );
     }
 
-    return !/^\/job\//.test(path) && (/\/jobs/.test(path) || /-jobs\/?$/.test(path));
+    return (
+      !/^\/job\//.test(path) && (/\/jobs/.test(path) || /-jobs\/?$/.test(path))
+    );
   }
 
   async function ensureLinkedInDescriptionExpanded() {
@@ -894,8 +1197,7 @@
     body = getLinkedInDescriptionBody(root),
   ) {
     return (
-      cleanDescriptionText(getText(body)) ||
-      cleanDescriptionText(getText(root))
+      cleanDescriptionText(getText(body)) || cleanDescriptionText(getText(root))
     );
   }
 
@@ -1005,7 +1307,10 @@
     return retryParse(async () => {
       const raw = await requestOllamaQueued(jdText, onStatus);
       const parsed = parseJsonResponse(raw);
-      return validateResult(parsed);
+      return {
+        result: validateResult(parsed),
+        rawJson: raw,
+      };
     });
   }
 
@@ -1285,11 +1590,7 @@
   }
 
   function buildPrompt(jdText) {
-    const badCriteria = JSON.stringify(
-      fitCriterionTexts(CONFIG.bad),
-      null,
-      2,
-    );
+    const badCriteria = JSON.stringify(fitCriterionTexts(CONFIG.bad), null, 2);
     const goodCriteria = JSON.stringify(
       fitCriterionTexts(CONFIG.good),
       null,
@@ -1547,7 +1848,7 @@ ${jdText}
   function renderTechItem(value) {
     const text = cleanMetadataText(value);
     const kind = techMatchKind(text);
-    const color = kind ? cleanMetadataText(CONFIG.techMatchColors?.[kind]) : '';
+    const color = kind ? cleanMetadataText(CONFIG.matchColors?.[kind]) : '';
     const style = color ? ` style="color: ${escapeHtml(color)}"` : '';
 
     return `<span${style}>${escapeHtml(text)}</span>`;
@@ -1630,7 +1931,7 @@ ${jdText}
 
   function renderWorkValue(work) {
     const text = escapeHtml(workText(work));
-    const style = work?.type === 'remote' ? remoteWorkStyle() : '';
+    const style = workMatchStyle(work);
     const value = style ? `<span${style}>${text}</span>` : text;
     return `${value}${renderConfidenceSymbol(work?.confidence, hasWorkValue(work))}`;
   }
@@ -1741,9 +2042,40 @@ ${jdText}
     );
   }
 
-  function remoteWorkStyle() {
-    const color = cleanMetadataText(CONFIG.techMatchColors?.good);
+  function workMatchStyle(work) {
+    const kind = workMatchKind(work);
+    const color = kind ? cleanMetadataText(CONFIG.matchColors?.[kind]) : '';
     return color ? ` style="color: ${escapeHtml(color)}"` : '';
+  }
+
+  function workMatchKind(work) {
+    const score = workSetupScore(work);
+    const workBad = configNumber(CONFIG.workBad);
+    const workGood = configNumber(CONFIG.workGood);
+    if (!Number.isFinite(score)) return '';
+
+    const isBad = Number.isFinite(workBad) && score >= workBad;
+    const isGood = Number.isFinite(workGood) && score <= workGood;
+    if (isBad === isGood) return '';
+
+    return isBad ? 'bad' : 'good';
+  }
+
+  function workSetupScore(work) {
+    const type = enumValue(work?.type, VALID_WORK_TYPES, 'unknown');
+    if (type === 'remote') return 0;
+    if (type === 'onsite') return 5;
+    if (type !== 'hybrid') return null;
+
+    const days = Number(work?.daysInOffice);
+    if (!Number.isFinite(days)) return null;
+
+    return clamp(Math.round(days), 1, 4);
+  }
+
+  function configNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
   }
 
   function techMatchKind(value) {
@@ -1757,12 +2089,10 @@ ${jdText}
     if (!text || !Array.isArray(patterns)) return false;
 
     for (const pattern of patterns) {
-      const source = cleanMetadataText(pattern);
-      if (!source) continue;
+      if (!(pattern instanceof RegExp)) continue;
 
-      try {
-        if (new RegExp(source, 'i').test(text)) return true;
-      } catch {}
+      pattern.lastIndex = 0;
+      if (pattern.test(text)) return true;
     }
 
     return false;
@@ -1801,11 +2131,14 @@ ${jdText}
   }
 
   function hasActionableFitConfidence(confidence) {
-    return VALID_CONFIDENCE.has(enumValue(confidence, VALID_FIT_CONFIDENCE, ''));
+    return VALID_CONFIDENCE.has(
+      enumValue(confidence, VALID_FIT_CONFIDENCE, ''),
+    );
   }
 
   function resetJobState() {
     state.currentResult = null;
+    state.currentRawJson = '';
     state.currentJobText = '';
     state.currentPayEvidence = null;
     state.currentError = null;
@@ -1813,6 +2146,7 @@ ${jdText}
     state.assessmentStatus = 'uncertain';
     state.assessment = null;
     state.lastSignature = '';
+    updateJsonWindowContent();
     renderPanelTitle();
   }
 
@@ -2292,7 +2626,9 @@ ${jdText}
       const text = cleanMetadataText(getText(element));
       if (!text || text.length > 500) continue;
 
-      const matchesKnownSource = sources.some((source) => text.includes(source));
+      const matchesKnownSource = sources.some((source) =>
+        text.includes(source),
+      );
       if (!matchesKnownSource && !isSalaryText(text)) continue;
 
       return growContextElement(element, root, 35, 700);
@@ -2305,7 +2641,9 @@ ${jdText}
     if (!root) return null;
 
     let best = null;
-    for (const element of root.querySelectorAll('section, article, header, div')) {
+    for (const element of root.querySelectorAll(
+      'section, article, header, div',
+    )) {
       const text = cleanMetadataText(getText(element));
       if (text.length < 40 || text.length > 1800 || !predicate(text)) continue;
       if (!best || text.length < cleanMetadataText(getText(best)).length) {
@@ -2460,7 +2798,9 @@ ${jdText}
   }
 
   function normalizeInlineText(text) {
-    return String(text || '').replace(/\s+/g, ' ').trim();
+    return String(text || '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   function escapeAttributeValue(value) {
@@ -2539,7 +2879,11 @@ ${jdText}
     for (const value of [].concat(values || [])) {
       const contextType = inferPayType(value);
       const snippets = extractSalarySnippets(value);
-      const ranges = snippets.length ? snippets : isSalaryText(value) ? [value] : [];
+      const ranges = snippets.length
+        ? snippets
+        : isSalaryText(value)
+          ? [value]
+          : [];
 
       for (const range of ranges) {
         const cleanRange = cleanMetadataText(range);
