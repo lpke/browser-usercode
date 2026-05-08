@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Job listing scraper (LLM)
 // @namespace    local
-// @version      1.0.9
+// @version      1.0.10
 // @description  Summarise LinkedIn and SEEK job listings with a local Ollama model.
 // @match        https://www.linkedin.com/jobs/view/*
 // @match        https://www.linkedin.com/jobs/search/*
@@ -58,7 +58,7 @@
       ['pay < 160k or $100/hour', 'pay'],
       ['hybrid >= 3 days in office', 'work-arrangement'],
       ['on-site role', 'work-arrangement'],
-      '.NET, Java, C#, C++ required',
+      'heavily backend-focused',
       ['hybrid but not based in Sydney/NSW', 'work-arrangement'],
     ],
 
@@ -123,6 +123,37 @@
   ]);
   const VALID_ASSESSMENT = new Set(['good', 'bad', 'uncertain']);
   const RESULT_SCHEMA = buildResultSchema();
+  const LINKEDIN_DESCRIPTION_SELECTOR = [
+    '[data-sdui-component="com.linkedin.sdui.generated.jobseeker.dsl.impl.aboutTheJob"]',
+    '.jobs-description__content',
+    '.jobs-description-content__text',
+    '.jobs-box__html-content',
+    '.show-more-less-html__markup',
+    '.description__text',
+    '#job-details',
+  ].join(',');
+  const LINKEDIN_IRRELEVANT_COMPONENT_RE =
+    /(?:similarJobs|jobAlertToggle|resumeReview|premiumApplicantInsightsForJobDetails|premiumCompanyInsightsForJobDetails|aboutTheCompanyForJobDetails|peopleWhoCanHelp|howYouFitGuide|manageJobBanner)/i;
+  const LINKEDIN_IRRELEVANT_COMPONENT_KEY_RE =
+    /(?:SimilarJobs|JobAlertToggle|ResumeReview|PremiumApplicantInsights|PremiumCompanyInsights|AboutTheCompany|PeopleWhoCanHelp|HowYouFit|ManageJobBanner|RecentJobSearches|JobsHome|JobCollections|Recommended|TopApplicant|ShowInterest|ExpandableFooter|job-card-component-ref-)/i;
+  const LINKEDIN_IRRELEVANT_CLASS_RE =
+    /\b(?:jobs-search-results-list|jobs-search-results__list|jobs-search-results__list-item|job-card-container|job-card-list|job-card-square|job-card-v2|blurred-job-card|jobs-home|jobs-similar-jobs|jobs-recommended|recommended-jobs)\b/i;
+  const LINKEDIN_IRRELEVANT_CANDIDATE_SELECTOR = [
+    '[data-sdui-component]',
+    '[componentkey]',
+    '.jobs-search-results-list',
+    '.jobs-search-results__list',
+    '.jobs-search-results__list-item',
+    '.job-card-container',
+    '.job-card-list',
+    '.job-card-square',
+    '.job-card-v2',
+    '.blurred-job-card',
+    '.jobs-home',
+    '.jobs-similar-jobs',
+    '.jobs-recommended',
+    '.recommended-jobs',
+  ].join(',');
 
   const state = {
     site: detectSite(),
@@ -1390,9 +1421,48 @@
     root,
     body = getLinkedInDescriptionBody(root),
   ) {
+    const bodyText = cleanLinkedInDescriptionText(getText(body));
+    if (bodyText) return bodyText;
+    if (!isLinkedInDescriptionScope(root)) return '';
+
+    return cleanLinkedInDescriptionText(getText(root));
+  }
+
+  function isLinkedInDescriptionScope(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
     return (
-      cleanDescriptionText(getText(body)) || cleanDescriptionText(getText(root))
+      matchesSelector(element, LINKEDIN_DESCRIPTION_SELECTOR) ||
+      Boolean(element.closest?.(LINKEDIN_DESCRIPTION_SELECTOR))
     );
+  }
+
+  function cleanLinkedInDescriptionText(text) {
+    return stripLinkedInIrrelevantTextTail(cleanDescriptionText(text));
+  }
+
+  function stripLinkedInIrrelevantTextTail(text) {
+    const value = normalizeText(text);
+    if (!value) return '';
+
+    const markers = [
+      /(?:^|\n)\s*More jobs(?:\s|$)/i,
+      /(?:^|\n)\s*More jobs for you(?:\s|$)/i,
+      /(?:^|\n)\s*See more jobs like this(?:\s|$)/i,
+      /(?:^|\n)\s*Set alert for similar jobs(?:\s|$)/i,
+      /(?:^|\n)\s*See how you compare\b/i,
+      /(?:^|\n)\s*Exclusive Job Seeker Insights\b/i,
+      /(?:^|\n)\s*Recommended Content\b/i,
+      /(?:^|\n)\s*Are these results helpful\?/i,
+    ];
+    let cutIndex = -1;
+
+    for (const marker of markers) {
+      const match = value.match(marker);
+      if (!match) continue;
+      if (cutIndex < 0 || match.index < cutIndex) cutIndex = match.index;
+    }
+
+    return cutIndex >= 0 ? value.slice(0, cutIndex).trim() : value;
   }
 
   function getLinkedInDetailsRoot(aboutTheJob) {
@@ -1447,6 +1517,8 @@
     );
 
     for (const control of controls) {
+      if (isLinkedInIrrelevantElement(control)) continue;
+
       const label = cleanMetadataText(
         control.innerText ||
           control.textContent ||
@@ -3208,6 +3280,10 @@ ${jdText}
     const sources = normalizeList(paySources);
     const elements = root.querySelectorAll('a, button, span, p, li, div');
     for (const element of elements) {
+      if (state.site === 'linkedin' && isLinkedInIrrelevantElement(element)) {
+        continue;
+      }
+
       const text = cleanMetadataText(getText(element));
       if (!text || text.length > 500) continue;
 
@@ -3229,6 +3305,10 @@ ${jdText}
     for (const element of root.querySelectorAll(
       'section, article, header, div',
     )) {
+      if (state.site === 'linkedin' && isLinkedInIrrelevantElement(element)) {
+        continue;
+      }
+
       const text = cleanMetadataText(getText(element));
       if (text.length < 40 || text.length > 1800 || !predicate(text)) continue;
       if (!best || text.length < cleanMetadataText(getText(best)).length) {
@@ -3271,18 +3351,32 @@ ${jdText}
   }
 
   function compactHtml(element, maxChars = 1800) {
-    const html = serializeCompactNode(element, { length: 0, max: maxChars });
+    const contextElement =
+      state.site === 'linkedin' ? getLinkedInHtmlContextElement(element) : element;
+    if (!contextElement) return '';
+
+    const html = serializeCompactNode(contextElement, {
+      length: 0,
+      max: maxChars,
+    });
     return truncateText(html, maxChars);
   }
 
-  function serializeCompactNode(node, state) {
-    if (!node || state.length >= state.max) return '';
+  function getLinkedInHtmlContextElement(element) {
+    if (!element || isLinkedInIrrelevantElement(element)) return null;
+    if (!containsLinkedInIrrelevantData(element)) return element;
+    return cloneLinkedInRelevantElement(element);
+  }
+
+  function serializeCompactNode(node, budget) {
+    if (!node || budget.length >= budget.max) return '';
 
     if (node.nodeType === Node.TEXT_NODE) {
-      return consumeHtmlBudget(normalizeInlineText(node.textContent), state);
+      return consumeHtmlBudget(normalizeInlineText(node.textContent), budget);
     }
 
     if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    if (state.site === 'linkedin' && isLinkedInIrrelevantElement(node)) return '';
 
     const tag = node.tagName.toLowerCase();
     if (
@@ -3303,14 +3397,14 @@ ${jdText}
 
     const open = `<${tag}${attrs}>`;
     const close = `</${tag}>`;
-    let html = consumeHtmlBudget(open, state);
+    let html = consumeHtmlBudget(open, budget);
 
     for (const child of node.childNodes) {
-      html += serializeCompactNode(child, state);
-      if (state.length >= state.max) break;
+      html += serializeCompactNode(child, budget);
+      if (budget.length >= budget.max) break;
     }
 
-    html += consumeHtmlBudget(close, state);
+    html += consumeHtmlBudget(close, budget);
     return html;
   }
 
@@ -3447,6 +3541,8 @@ ${jdText}
     const candidates = [];
     const elements = root.querySelectorAll('a, button, span, p, li, div');
     for (const element of elements) {
+      if (isLinkedInIrrelevantElement(element)) continue;
+
       const text = cleanMetadataText(getText(element));
       if (!text || text.length > 240 || !isSalaryText(text)) continue;
 
@@ -3779,7 +3875,200 @@ ${jdText}
     const element =
       typeof input === 'string' ? document.querySelector(input) : input;
     if (!element) return '';
+    if (state.site === 'linkedin') return getLinkedInText(element);
     return element.innerText || element.textContent || '';
+  }
+
+  function getLinkedInText(element) {
+    if (isLinkedInIrrelevantElement(element)) return '';
+    if (!containsLinkedInIrrelevantData(element)) {
+      return element.innerText || element.textContent || '';
+    }
+
+    const relevantElement = cloneLinkedInRelevantElement(element);
+    return relevantElement ? collectElementText(relevantElement) : '';
+  }
+
+  function cloneLinkedInRelevantElement(element) {
+    if (!element || isLinkedInIrrelevantElement(element)) return null;
+
+    const clone = element.cloneNode(true);
+    pruneLinkedInIrrelevantNodes(clone);
+
+    return cleanMetadataText(collectElementText(clone)) ? clone : null;
+  }
+
+  function containsLinkedInIrrelevantData(element) {
+    if (!element?.querySelectorAll) return false;
+
+    try {
+      for (const candidate of element.querySelectorAll(
+        LINKEDIN_IRRELEVANT_CANDIDATE_SELECTOR,
+      )) {
+        if (candidate !== element && isLinkedInIrrelevantElementSelf(candidate)) {
+          return true;
+        }
+      }
+
+      for (const heading of element.querySelectorAll(
+        'h1, h2, h3, h4, [role="heading"]',
+      )) {
+        if (isLinkedInIrrelevantSectionHeading(heading)) return true;
+      }
+    } catch {}
+
+    return false;
+  }
+
+  function pruneLinkedInIrrelevantNodes(root) {
+    if (!root?.querySelectorAll) return;
+
+    const candidates = Array.from(
+      root.querySelectorAll(LINKEDIN_IRRELEVANT_CANDIDATE_SELECTOR),
+    );
+    for (const candidate of candidates) {
+      if (candidate !== root && isLinkedInIrrelevantElementSelf(candidate)) {
+        candidate.remove();
+      }
+    }
+
+    const headings = Array.from(
+      root.querySelectorAll('h1, h2, h3, h4, [role="heading"]'),
+    );
+    for (const heading of headings) {
+      if (!root.contains(heading) || !isLinkedInIrrelevantSectionHeading(heading)) {
+        continue;
+      }
+
+      const section = findLinkedInIrrelevantSectionRoot(heading, root);
+      if (section && section !== root) section.remove();
+    }
+  }
+
+  function isLinkedInIrrelevantElement(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+
+    let current = element;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      if (isLinkedInIrrelevantElementSelf(current)) return true;
+      current = current.parentElement;
+    }
+
+    return false;
+  }
+
+  function isLinkedInIrrelevantElementSelf(element) {
+    if (!element?.getAttribute) return false;
+
+    if (
+      element.id === PANEL_ID ||
+      element.id === JSON_WINDOW_ID ||
+      element.id === DEBUG_WINDOW_ID
+    ) {
+      return true;
+    }
+
+    const component = element.getAttribute('data-sdui-component') || '';
+    if (
+      component &&
+      LINKEDIN_IRRELEVANT_COMPONENT_RE.test(component) &&
+      !/aboutTheJob/i.test(component)
+    ) {
+      return true;
+    }
+
+    const componentKey = element.getAttribute('componentkey') || '';
+    if (
+      componentKey &&
+      LINKEDIN_IRRELEVANT_COMPONENT_KEY_RE.test(componentKey) &&
+      !/AboutTheJob/i.test(componentKey)
+    ) {
+      return true;
+    }
+
+    const className =
+      typeof element.className === 'string'
+        ? element.className
+        : String(element.className || '');
+    return LINKEDIN_IRRELEVANT_CLASS_RE.test(className);
+  }
+
+  function isLinkedInIrrelevantSectionHeading(heading) {
+    if (!heading || isLinkedInDescriptionScope(heading)) return false;
+    return isLinkedInIrrelevantHeadingText(cleanMetadataText(rawText(heading)));
+  }
+
+  function isLinkedInIrrelevantHeadingText(text) {
+    return /^(?:more jobs(?: for you)?|see more jobs like this|jobs where you(?:'|\u2019)d be a top applicant|explore with job collections|recent job searches|show your interest in these companies|people you can reach out to|set alert for similar jobs|see how you compare\b|exclusive job seeker insights\b|determine your fit and how to stand out|recommended for you|similar jobs|people also viewed|about the company|are these results helpful\?)/i.test(
+      cleanMetadataText(text),
+    );
+  }
+
+  function findLinkedInIrrelevantSectionRoot(heading, root) {
+    let current = heading.parentElement;
+    let candidate = current;
+
+    while (
+      current?.parentElement &&
+      current.parentElement !== root &&
+      !isLinkedInDescriptionScope(current.parentElement)
+    ) {
+      const parentText = cleanMetadataText(rawText(current.parentElement));
+      if (parentText.length > 6000) break;
+
+      candidate = current.parentElement;
+      current = current.parentElement;
+      if (isLinkedInIrrelevantElementSelf(candidate)) break;
+    }
+
+    return candidate && candidate !== root ? candidate : heading;
+  }
+
+  function collectElementText(element) {
+    const parts = [];
+    collectElementTextParts(element, parts);
+    return normalizeText(parts.join(''));
+  }
+
+  function collectElementTextParts(node, parts) {
+    if (!node) return;
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      parts.push(node.textContent || '');
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const tag = node.tagName.toLowerCase();
+    if (
+      /^(script|style|svg|path|use|img|picture|source|iframe|noscript|template)$/i.test(
+        tag,
+      )
+    ) {
+      return;
+    }
+
+    if (tag === 'br') {
+      parts.push('\n');
+      return;
+    }
+
+    const isBlock =
+      /^(address|article|aside|blockquote|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|th|thead|tr|ul)$/i.test(
+        tag,
+      );
+    if (isBlock) parts.push('\n');
+
+    for (const child of node.childNodes) {
+      collectElementTextParts(child, parts);
+    }
+
+    if (isBlock) parts.push('\n');
+  }
+
+  function rawText(element) {
+    return element?.innerText || element?.textContent || '';
   }
 
   function normalizeText(text) {
@@ -3790,6 +4079,14 @@ ${jdText}
       .replace(/[ \t]{2,}/g, ' ')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  function matchesSelector(element, selector) {
+    try {
+      return Boolean(element?.matches?.(selector));
+    } catch {
+      return false;
+    }
   }
 
   function firstElement(selectors) {
