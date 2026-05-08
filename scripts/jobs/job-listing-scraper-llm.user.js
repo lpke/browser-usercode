@@ -59,6 +59,7 @@
       ['hybrid >= 3 days in office', 'work-arrangement'],
       ['on-site role', 'work-arrangement'],
       'heavily backend-focused',
+      'C#, C++, .NET, or Java as a hard requirement',
       ['hybrid but not based in Sydney/NSW', 'work-arrangement'],
     ],
 
@@ -2121,8 +2122,8 @@ Rules:
 - Do not classify tech from responsibilities, product descriptions, company stack, or generic "we use" sections as required unless the candidate requirement wording is explicit
 - If the same tech appears as both required and optional, include it only in required
 - Order tech arrays from strongest and most prominent evidence to weakest: core role tech, title/summary tech, repeated tech, and explicit must-have tech first. Do not sort alphabetically
-- For workArrangement: if the listing mentions a single specific day count, set daysInOffice, daysInOfficeMin, and daysInOfficeMax to that number
-- For workArrangement: if the listing mentions a range such as "2-3 days in office", set daysInOffice and daysInOfficeMin to the lower number, daysInOfficeMax to the upper number, and mention the range in details
+- For workArrangement: if the listing mentions a single specific day count, set daysInOffice, daysInOfficeMin, and daysInOfficeMax to that number. Written numbers such as "three days per week in office" count as explicit day counts
+- For workArrangement: if the listing mentions a range such as "2-3 days in office" or "two to three days in office", set daysInOffice and daysInOfficeMin to the lower number, daysInOfficeMax to the upper number, and mention the range in details
 - For workArrangement: if the listing says "hybrid" but does not explicitly state the number of office days, set daysInOffice, daysInOfficeMin, and daysInOfficeMax to null. Do not assume hybrid means 2-3 days
 - For workArrangement fit checks: never match day-count criteria from a generic "hybrid" label alone. Day-count criteria need explicit office-day evidence in the listing
 - For workArrangement fit checks: compare hybrid day-count thresholds using daysInOfficeMin, the lower number of a range. For example, "2-3 days in office" counts as 2 for "hybrid >= 3 days in office", so that criterion is false unless other evidence supports 3+ required days
@@ -2227,7 +2228,10 @@ ${jdText}
       type === 'hybrid' && hasExplicitOfficeDayCount(sourceText);
     const workDays =
       type === 'hybrid' && hasOfficeDayEvidence
-        ? normalizeWorkDays(work)
+        ? firstWorkDaysRange(
+            extractExplicitOfficeDayRange(sourceText),
+            normalizeWorkDays(work),
+          )
         : { min: null, max: null };
 
     return {
@@ -2260,12 +2264,12 @@ ${jdText}
   }
 
   function explicitOfficeDayPhrasePattern() {
-    const number = String.raw`(?:\d+(?:\.\d+)?|one|two|three|four|five)`;
+    const number = officeDayNumberPattern();
     const range = String.raw`${number}\s*(?:-|–|—|\bto\b|\bor\b)\s*${number}`;
     const qualifier = String.raw`(?:(?:at\s+least|min(?:imum)?(?:\s+of)?|up\s+to|around|about|approx(?:imately)?)\s+)?`;
     const count = String.raw`${qualifier}(?:${range}|${number}\s*\+?)`;
     const office = String.raw`(?:office|on[-\s]?site|onsite|workplace|work\s+site|site)`;
-    const day = String.raw`(?:d|day|days)`;
+    const day = String.raw`(?:days|day|d)`;
     const frequency = String.raw`(?:week|weekly|fortnight|fortnightly|month|monthly)`;
     const cadence = String.raw`(?:\s*(?:a|per|\/)\s*${frequency})?`;
     const countThenOffice = String.raw`${count}\s*${day}s?${cadence}[^.\n;:]{0,80}\b${office}\b`;
@@ -2276,6 +2280,30 @@ ${jdText}
       String.raw`(?:${countThenOffice}|${officeThenCount}|${officeDays})`,
       'i',
     );
+  }
+
+  function extractExplicitOfficeDayRange(text) {
+    const normalized = cleanMetadataText(text);
+    if (!normalized) return { min: null, max: null };
+
+    const pattern = explicitOfficeDayPhrasePattern();
+    const match = normalized.match(pattern);
+    if (!match) return { min: null, max: null };
+
+    const values = [...match[0].matchAll(officeDayNumberMatcher())]
+      .map((item) => parseOfficeDayNumber(item[0]))
+      .filter(Number.isFinite);
+    if (!values.length) return { min: null, max: null };
+
+    return normalizeNumberRange(values[0], values[1] ?? null);
+  }
+
+  function firstWorkDaysRange(...ranges) {
+    for (const range of ranges) {
+      if (range?.min !== null || range?.max !== null) return range;
+    }
+
+    return { min: null, max: null };
   }
 
   function normalizeWorkDays(work) {
@@ -2296,8 +2324,8 @@ ${jdText}
     }
 
     if (typeof value === 'string') {
-      const matches = [...value.matchAll(/\d+(?:\.\d+)?/g)]
-        .map((match) => Number(match[0]))
+      const matches = [...value.matchAll(officeDayNumberMatcher())]
+        .map((match) => parseOfficeDayNumber(match[0]))
         .filter(Number.isFinite);
       if (matches.length >= 2) {
         return normalizeNumberRange(matches[0], matches[1]);
@@ -2306,6 +2334,30 @@ ${jdText}
     }
 
     return normalizeNumberRange(value, null);
+  }
+
+  function officeDayNumberPattern() {
+    return String.raw`(?:\d+(?:\.\d+)?|one|two|three|four|five)`;
+  }
+
+  function officeDayNumberMatcher() {
+    return new RegExp(officeDayNumberPattern(), 'gi');
+  }
+
+  function parseOfficeDayNumber(value) {
+    const text = cleanMetadataText(value).toLowerCase();
+    const words = {
+      one: 1,
+      two: 2,
+      three: 3,
+      four: 4,
+      five: 5,
+    };
+
+    if (Object.prototype.hasOwnProperty.call(words, text)) return words[text];
+
+    const number = Number(text);
+    return Number.isFinite(number) ? number : null;
   }
 
   function normalizeNumberRange(minValue, maxValue) {
