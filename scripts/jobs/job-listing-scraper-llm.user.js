@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Job listing scraper (LLM)
 // @namespace    local
-// @version      1.0.4
+// @version      1.0.6
 // @description  Summarise LinkedIn and SEEK job listings with a local Ollama model.
 // @match        https://www.linkedin.com/jobs/view/*
 // @match        https://www.linkedin.com/jobs/search/*
@@ -50,6 +50,11 @@
       high: '█',
     },
     confidenceColor: '#666b71',
+    confidenceColors: {
+      low: '#4b5563',
+      medium: '#666b71',
+      high: '#8a9098',
+    },
   };
 
   const PANEL_ID = 'job-scraper-llm-panel';
@@ -229,16 +234,67 @@
       #${PANEL_ID} .job-scraper-llm__confidence {
         display: inline-block;
         margin-left: 5px;
-        font-size: 0.5em;
+        position: relative;
+        top: -0.08em;
+        font-size: 0.6em;
         font-weight: 700;
         line-height: 1;
-        vertical-align: 0.15em;
+        vertical-align: baseline;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__tech-line {
+        position: relative;
+        max-height: calc(1.45em * 2);
+        overflow: hidden;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__tech-line--overflow {
+        cursor: pointer;
+        padding-right: 24px;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__tech-line--overflow:not(.job-scraper-llm__tech-line--expanded)::after {
+        content: "...";
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        min-width: 30px;
+        padding-left: 12px;
+        color: #f9fafb;
+        text-align: right;
+        background: linear-gradient(90deg, rgba(17, 24, 39, 0), rgba(17, 24, 39, 0.94) 38%);
+      }
+
+      #${PANEL_ID} .job-scraper-llm__tech-line--expanded {
+        max-height: none;
+        padding-right: 0;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__fit-list {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px 18px;
+        margin: 4px 0;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__fit-item {
+        display: inline-flex;
+        align-items: baseline;
+        min-width: 0;
+        max-width: 100%;
       }
 
       #${PANEL_ID} .job-scraper-llm__fit-symbol {
         display: inline-block;
         padding-right: 6px;
+        flex: 0 0 auto;
         font-weight: 700;
+      }
+
+      #${PANEL_ID} .job-scraper-llm__fit-text {
+        min-width: 0;
+        overflow-wrap: anywhere;
       }
 
       #${PANEL_ID} .job-scraper-llm__error {
@@ -389,6 +445,23 @@
       event.stopPropagation();
       scheduleRun(0, { force: true });
     });
+
+    panel.addEventListener('click', (event) => {
+      const techLine = event.target.closest('.job-scraper-llm__tech-line--overflow');
+      if (!techLine || !panel.contains(techLine)) return;
+
+      toggleTechLine(techLine);
+    });
+
+    panel.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+
+      const techLine = event.target.closest('.job-scraper-llm__tech-line--overflow');
+      if (!techLine || !panel.contains(techLine)) return;
+
+      event.preventDefault();
+      toggleTechLine(techLine);
+    });
   }
 
   function toggleCollapsed() {
@@ -401,6 +474,7 @@
     if (!state.panel) return;
 
     state.panel.classList.toggle('job-scraper-llm--collapsed', state.collapsed);
+    if (!state.collapsed) window.requestAnimationFrame(updateTechClampState);
   }
 
   function renderPanelTitle() {
@@ -812,6 +886,7 @@ Rules:
 - If a heading or sentence says nice-to-have, preferred, desirable, bonus, advantage, familiarity, or exposure, every tech in that scope is optional even if it appears important
 - Do not classify tech from responsibilities, product descriptions, company stack, or generic "we use" sections as required unless the candidate requirement wording is explicit
 - If the same tech appears as both required and optional, include it only in required
+- Order tech arrays from strongest and most prominent evidence to weakest: core role tech, title/summary tech, repeated tech, and explicit must-have tech first. Do not sort alphabetically
 - For workArrangement: if the listing mentions specific days, extract the number. If conflicting signals exist, set confidence to "low" and note in details
 - For pay: normalise to AUD annual where possible. If only hourly/daily is given, state the raw value and set type accordingly
 - If a field cannot be determined, set it to null/unknown with confidence "low"
@@ -923,8 +998,9 @@ ${jdText}
       <div class="job-scraper-llm__divider"></div>
       ${renderTechLine('Required', result.techStack.required)}
       ${renderTechLine('Optional', result.techStack.optional)}
-      ${renderFitTriggers(result)}
+      ${renderFitCriteria(result)}
     `;
+    window.requestAnimationFrame(updateTechClampState);
   }
 
   function renderError(error) {
@@ -947,37 +1023,64 @@ ${jdText}
 
   function renderTechLine(label, values) {
     return `
-      <div class="job-scraper-llm__line">
+      <div class="job-scraper-llm__line job-scraper-llm__tech-line" data-tech-line>
         <span class="job-scraper-llm__label">${escapeHtml(label)}:</span>
         ${escapeHtml(values.length ? values.join(', ') : 'None found')}
       </div>
     `;
   }
 
-  function renderFitTriggers(result) {
-    const status = enumValue(result.assessment?.status, VALID_ASSESSMENT, 'uncertain');
-    if (status === 'uncertain') return '';
-
-    const checks = triggeredFitChecks(result, status);
-    if (!checks.length) return '';
+  function renderFitCriteria(result) {
+    const items = collectFitCriteria(result);
+    if (!items.length) return '';
 
     return `
       <div class="job-scraper-llm__divider"></div>
-      ${checks.map((check) => renderFitTriggerLine(status, check)).join('')}
+      <div class="job-scraper-llm__fit-list">
+        ${items.map(renderFitCriterionItem).join('')}
+      </div>
     `;
   }
 
-  function renderFitTriggerLine(status, check) {
-    const icon = CONFIG.statusIcons?.[status] || '';
-    const color = statusColor(status);
+  function renderFitCriterionItem(item) {
+    const icon = CONFIG.statusIcons?.[item.kind] || '';
+    const color = statusColor(item.kind);
     const style = color ? ` style="color: ${escapeHtml(color)}"` : '';
-    const details = check.details || 'Matched with high confidence';
+    const textStyle = item.active && color ? ` style="color: ${escapeHtml(color)}"` : '';
 
     return `
-      <div class="job-scraper-llm__line">
-        <span class="job-scraper-llm__fit-symbol"${style}>${escapeHtml(icon)}</span>${escapeHtml(check.criterion)}: ${escapeHtml(details)}
-      </div>
+      <span class="job-scraper-llm__fit-item">
+        <span class="job-scraper-llm__fit-symbol"${style}>${escapeHtml(icon)}</span>
+        <span class="job-scraper-llm__fit-text"${textStyle}>${escapeHtml(item.check.criterion)}</span>
+        ${renderConfidenceSymbol(item.check.confidence, true)}
+      </span>
     `;
+  }
+
+  function updateTechClampState() {
+    if (!state.content) return;
+
+    for (const line of state.content.querySelectorAll('[data-tech-line]')) {
+      line.classList.remove('job-scraper-llm__tech-line--overflow', 'job-scraper-llm__tech-line--expanded');
+      line.removeAttribute('role');
+      line.removeAttribute('tabindex');
+      line.removeAttribute('aria-expanded');
+      line.removeAttribute('title');
+
+      if (line.scrollHeight <= line.clientHeight + 1) continue;
+
+      line.classList.add('job-scraper-llm__tech-line--overflow');
+      line.setAttribute('role', 'button');
+      line.setAttribute('tabindex', '0');
+      line.setAttribute('aria-expanded', 'false');
+      line.setAttribute('title', 'Click to expand');
+    }
+  }
+
+  function toggleTechLine(line) {
+    const expanded = line.classList.toggle('job-scraper-llm__tech-line--expanded');
+    line.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    line.setAttribute('title', expanded ? 'Click to collapse' : 'Click to expand');
   }
 
   function renderWorkValue(work) {
@@ -1046,7 +1149,7 @@ ${jdText}
     const symbol = confidenceSymbol(confidence, shouldShow);
     if (!symbol) return '';
 
-    const color = cleanMetadataText(CONFIG.confidenceColor);
+    const color = confidenceColor(confidence);
     const style = color ? ` style="color: ${escapeHtml(color)}"` : '';
     return `<span class="job-scraper-llm__confidence"${style} title="${escapeHtml(confidence)} confidence">${escapeHtml(symbol)}</span>`;
   }
@@ -1062,11 +1165,35 @@ ${jdText}
     return cleanMetadataText(CONFIG.statusColors?.[status]);
   }
 
-  function triggeredFitChecks(result, status) {
-    const checks = result.fitChecks?.[status];
-    if (!Array.isArray(checks)) return [];
+  function confidenceColor(confidence) {
+    const key = enumValue(confidence, VALID_CONFIDENCE, '');
+    return cleanMetadataText(CONFIG.confidenceColors?.[key] || CONFIG.confidenceColor);
+  }
 
-    return checks.filter((check) => check.matches && check.confidence === 'high');
+  function collectFitCriteria(result) {
+    const verdict = enumValue(result.assessment?.status, VALID_ASSESSMENT, 'uncertain');
+    const items = [];
+
+    for (const kind of ['bad', 'good']) {
+      const checks = result.fitChecks?.[kind];
+      if (!Array.isArray(checks)) continue;
+
+      for (const check of checks) {
+        if (!hasFitCriterionData(check)) continue;
+
+        items.push({
+          kind,
+          check,
+          active: verdict === kind && check.matches && check.confidence === 'high',
+        });
+      }
+    }
+
+    return items;
+  }
+
+  function hasFitCriterionData(check) {
+    return Boolean(check?.matches || cleanMetadataText(check?.details));
   }
 
   function resetJobState() {
