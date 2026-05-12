@@ -2039,6 +2039,7 @@
         type: enumStringSchema(VALID_PAY_TYPES),
         includesSuper: { type: 'boolean' },
         isOTE: { type: 'boolean' },
+        details: { type: 'string' },
         confidence: enumStringSchema(VALID_CONFIDENCE),
       }),
       techStack: strictObjectSchema({
@@ -2130,6 +2131,7 @@ Rules:
 - For workArrangement: if conflicting signals exist, set confidence to "low" and note the conflict in details
 - Input has metadata, compact source HTML, and plain text. Cross-check them; prefer explicit metadata/source HTML over inference
 - For pay: preserve frequency; never convert hourly/daily to annual. Compare fit thresholds only with the same frequency
+- For pay: keep details concise and include important qualifiers such as super, OTE, exact frequency, or ambiguous/conflicting evidence
 - If a field cannot be determined, set it to null/unknown with confidence "low"
 - Only include programming languages, frameworks, libraries, tools, platforms, and infrastructure in techStack. Do not include soft skills or methodologies
 - Return ONLY the JSON object, no other text
@@ -2194,6 +2196,7 @@ ${jdText}
         type: enumValue(pay.type, VALID_PAY_TYPES, 'unknown'),
         includesSuper: booleanValue(pay.includesSuper),
         isOTE: booleanValue(pay.isOTE),
+        details: stringOrEmpty(pay.details),
         confidence: enumValue(pay.confidence, VALID_CONFIDENCE, 'low'),
       },
       techStack: {
@@ -2541,12 +2544,18 @@ ${jdText}
   function renderWorkValue(work) {
     const text = escapeHtml(workText(work));
     const style = workMatchStyle(work);
-    const value = style ? `<span${style}>${text}</span>` : text;
+    const details = cleanMetadataText(work?.details);
+    const title = details ? ` title="${escapeHtml(details)}"` : '';
+    const value = style
+      ? `<span${style}${title}>${text}</span>`
+      : `<span${title}>${text}</span>`;
     return `${value}${renderConfidenceSymbol(work?.confidence, hasWorkValue(work))}`;
   }
 
   function renderPayValue(pay) {
-    return `${escapeHtml(payText(pay))}${renderConfidenceSymbol(pay?.confidence, hasPayValue(pay))}`;
+    const details = cleanMetadataText(pay?.details);
+    const title = details ? ` title="${escapeHtml(details)}"` : '';
+    return `<span${title}>${escapeHtml(payText(pay))}</span>${renderConfidenceSymbol(pay?.confidence, hasPayValue(pay))}`;
   }
 
   function formatWork(work) {
