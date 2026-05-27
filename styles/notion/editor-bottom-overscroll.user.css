@@ -1,0 +1,21 @@
+/* ==UserStyle==
+@name           Notion - Editor Bottom Overscroll
+@namespace      local.lpke.userstyles.notion
+@version        1.0.0
+@description    Adds bottom scroll room to Notion pages so late-page text can be positioned higher while editing.
+@author         Luke
+@license        MIT
+@preprocessor   default
+==/UserStyle== */
+
+@-moz-document domain("notion.so") {
+  /*
+   * Notion's page scroller sizes page editors exactly to their content,
+   * including database item pages in side peek and full-page views.
+   */
+  .notion-scroller.vertical [data-content-editable-root="true"],
+  .notion-scroller.vertical .whenContentEditable[contenteditable="true"] {
+    padding-bottom: 70vh !important;
+    box-sizing: border-box !important;
+  }
+}
