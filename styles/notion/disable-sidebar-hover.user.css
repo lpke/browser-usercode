@@ -8,7 +8,7 @@
 @preprocessor   default
 ==/UserStyle== */
 
-@-moz-document domain("notion.so") {
+@-moz-document regexp(".*?notion\\.((com)|(so)).*") {
   /*
    * Pinned-open sidebar has width and no aria-hidden attribute.
    * Collapsed/hover-preview sidebar exposes aria-hidden or the lock-open

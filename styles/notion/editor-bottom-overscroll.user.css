@@ -8,7 +8,7 @@
 @preprocessor   default
 ==/UserStyle== */
 
-@-moz-document domain("notion.so") {
+@-moz-document regexp(".*?notion\\.((com)|(so)).*") {
   /*
    * Notion's page scroller sizes page editors exactly to their content,
    * including database item pages in side peek and full-page views.
