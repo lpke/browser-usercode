@@ -3,10 +3,8 @@
 // @namespace    local
 // @version      1.2.0
 // @description  Sink Notion Amplitude/EventTrail, Statsig, and Sentry telemetry that causes blocked-request retry noise.
-// @match        https://www.notion.so/*
-// @match        https://notion.so/*
-// @match        https://calendar.notion.so/*
-// @match        https://mail.notion.com/*
+// @match        https://*.notion.com/*
+// @match        https://*.notion.so/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==

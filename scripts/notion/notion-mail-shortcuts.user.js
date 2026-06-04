@@ -4,6 +4,7 @@
 // @version      2.0.0
 // @description  Block Notion Mail's C compose shortcut, including the Ctrl/Cmd+C compose leak, while preserving normal copy.
 // @match        https://mail.notion.com/*
+// @match        https://mail.notion.so/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
